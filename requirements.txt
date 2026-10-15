@@ -1,0 +1,8 @@
+# TrailNet — prototype « PC + carte LoRa »
+# Installation : py -m pip install -r requirements.txt
+meshtastic>=2.7
+faster-whisper>=1.1
+sounddevice>=0.5
+numpy>=2.0
+pyttsx3>=2.90
+pywin32; sys_platform == "win32"
