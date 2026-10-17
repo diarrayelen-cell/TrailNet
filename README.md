@@ -4,8 +4,6 @@
 
 Deux cartes LoRa à 23 €, deux PC, un script Python. Pas de serveur, pas de carte SIM, pas d'abonnement, pas de compte. Ce dépôt contient tout ce qu'il faut pour refaire le montage chez toi, étape par étape, avec les vraies erreurs qu'on a rencontrées et comment on les a corrigées.
 
-![Schéma du prototype](docs/schema.svg)
-
 TrailNet vise un communicateur hors réseau pour la randonnée. Ce prototype en valide la première brique : **la parole transmise sous forme de texte**. Il sait aussi envoyer une **vraie note vocale**, compressée avec Codec2, pour comparer (étape 9). Le PC joue le rôle du futur ordinateur embarqué (micro, transcription, synthèse vocale) ; la carte LoRa n'est que la radio.
 
 > ⚠ **Prototype de laboratoire.** Ce n'est pas un moyen d'alerte. En montagne, garde ton téléphone, le 112 et les moyens de secours officiels.
