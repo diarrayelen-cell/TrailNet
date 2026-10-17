@@ -1,8 +1,10 @@
-# TrailNet — prototype « PC + carte LoRa »
+# TrailNet — prototype « PC + carte LoRa » (v1.6)
 # Installation : py -m pip install -r requirements.txt
+# Option débruitage des notes vocales : py -m pip install pyrnnoise --no-deps
 meshtastic>=2.7
 faster-whisper>=1.1
 sounddevice>=0.5
 numpy>=2.0
 pyttsx3>=2.90
+pycodec2>=4.1
 pywin32; sys_platform == "win32"

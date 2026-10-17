@@ -4,9 +4,13 @@
 
 Deux cartes LoRa à 23 €, deux PC, un script Python. Pas de serveur, pas de carte SIM, pas d'abonnement, pas de compte. Ce dépôt contient tout ce qu'il faut pour refaire le montage chez toi, étape par étape, avec les vraies erreurs qu'on a rencontrées et comment on les a corrigées.
 
-TrailNet vise un communicateur hors réseau pour la randonnée. Ce prototype en valide la première brique : **la parole transmise sous forme de texte**. Le PC joue le rôle du futur ordinateur embarqué (micro, transcription, synthèse vocale) ; la carte LoRa n'est que la radio.
+![Schéma du prototype](docs/schema.svg)
+
+TrailNet vise un communicateur hors réseau pour la randonnée. Ce prototype en valide la première brique : **la parole transmise sous forme de texte**. Il sait aussi envoyer une **vraie note vocale**, compressée avec Codec2, pour comparer (étape 9). Le PC joue le rôle du futur ordinateur embarqué (micro, transcription, synthèse vocale) ; la carte LoRa n'est que la radio.
 
 > ⚠ **Prototype de laboratoire.** Ce n'est pas un moyen d'alerte. En montagne, garde ton téléphone, le 112 et les moyens de secours officiels.
+
+**Version du script : v1.6** (`py trailnet_pc.py --version`). Testé en vrai entre deux PC : la dictée, la réception et la lecture à voix haute. Les notes vocales par radio sont testées hors carte ; l'essai réel est la prochaine étape.
 
 ---
 
@@ -25,22 +29,23 @@ TrailNet vise un communicateur hors réseau pour la randonnée. Ce prototype en 
 11. [Étape 6 — Créer ton canal privé](#étape-6--créer-ton-canal-privé)
 12. [Étape 7 — Test 1 : dicter et recevoir](#étape-7--test-1--dicter-et-recevoir)
 13. [Étape 8 — Test 2 : lecture à voix haute](#étape-8--test-2--lecture-à-voix-haute)
-14. [Toutes les commandes](#toutes-les-commandes)
-15. [Dépannage](#dépannage)
-16. [Ce qui est protégé, ce qui ne l'est pas](#ce-qui-est-protégé-ce-qui-ne-lest-pas)
-17. [Portée : à quoi t'attendre](#portée--à-quoi-tattendre)
-18. [Réglementation](#réglementation)
-19. [Pour aller plus loin](#pour-aller-plus-loin)
-20. [Ce qui existe déjà](#ce-qui-existe-déjà)
-21. [Structure du dépôt, auteurs, licence](#structure-du-dépôt)
+14. [Étape 9 — Ta vraie voix, en Codec2](#étape-9--ta-vraie-voix-en-codec2)
+15. [Toutes les commandes](#toutes-les-commandes)
+16. [Dépannage](#dépannage)
+17. [Ce qui est protégé, ce qui ne l'est pas](#ce-qui-est-protégé-ce-qui-ne-lest-pas)
+18. [Portée : à quoi t'attendre](#portée--à-quoi-tattendre)
+19. [Réglementation : la règle des 10 %](#réglementation--la-règle-des-10-)
+20. [Pour aller plus loin](#pour-aller-plus-loin)
+21. [Ce qui existe déjà](#ce-qui-existe-déjà)
+22. [Structure du dépôt, versions, auteurs, licence](#structure-du-dépôt)
 
 ---
 
 ## Pourquoi envoyer du texte plutôt que la voix
 
-LoRa porte loin, mais son débit est minuscule : environ **1 kbit/s** avec le réglage par défaut de Meshtastic (LONG_FAST), et chaque paquet ne transporte qu'environ **230 octets**. En Europe, le temps d'émission est en plus limité par la réglementation.
+LoRa porte loin, mais son débit est minuscule : environ **1 kbit/s** avec le réglage par défaut de Meshtastic (LONG_FAST), et chaque paquet ne transporte qu'environ **230 octets**. En Europe, chaque carte n'a en plus le droit d'émettre que **10 % du temps** (voir [Réglementation](#réglementation--la-règle-des-10-)).
 
-Même avec Codec2, un codec conçu pour la voix à très bas débit, une note vocale de 25 s pèse environ 2 500 octets : 13 paquets et une vingtaine de secondes d'émission. La même phrase transcrite en texte tient en **un seul paquet**.
+Même avec Codec2, un codec conçu pour la voix à très bas débit, une note vocale de 25 s pèse environ 2 500 octets : une quinzaine de paquets et environ 26 s d'émission. La même phrase transcrite en texte tient en **un seul paquet**, émis en une à deux secondes.
 
 D'où le principe du prototype :
 
@@ -50,7 +55,7 @@ micro → Whisper (sur le PC) → texte → carte A ~~~ radio ~~~ carte B → te
 
 ## Ce qu'on a mesuré
 
-Tests du 9 octobre 2026, en intérieur, PC portable récent (Ryzen 5), modèle Whisper `small`. Les valeurs Codec2 sont **calculées** pour comparaison, pas transmises.
+Tests du 9 octobre 2026, en intérieur, PC portable récent (Ryzen 5), modèle Whisper `small`. Les valeurs Codec2 sont **calculées** pour comparaison, pas transmises, avec le découpage du script actuel (176 octets de voix par paquet).
 
 | | Note 1 | Note 2 | Note 3 |
 |---|---|---|---|
@@ -59,12 +64,17 @@ Tests du 9 octobre 2026, en intérieur, PC portable récent (Ryzen 5), modèle W
 | Texte transmis | 141 octets | 184 octets | 224 octets |
 | Paquets radio | 1 | 1 | 2 |
 | Temps d'antenne | ≈ 1,5 s | ≈ 1,8 s | ≈ 2,6 s |
-| Même note en voix Codec2 700C | 2 489 o · 13 paquets · ≈ 23 s | 2 239 o · 12 paquets · ≈ 21 s | 3 323 o · 17 paquets · ≈ 31 s |
+| Même note en voix Codec2 700C | 2 489 o · 15 paquets · ≈ 26 s | 2 239 o · 13 paquets · ≈ 23 s | 3 323 o · 19 paquets · ≈ 34 s |
 | Accusé de réception | ✓ | ✓ | ✓ (2/2) |
 
-**11 octobre 2026, PC → PC** : 43,1 s de parole sont devenues 433 octets, en 3 paquets et environ 4,5 s d'antenne, contre 4 311 octets, 22 paquets et environ 40 s en Codec2. Les 5 paquets des deux messages du test sont arrivés, avec un accusé de réception chacun et un SNR de 6 à 7 dB. Sur le PC d'arrivée, ils ont été affichés et lus à voix haute.
+**11 octobre 2026, PC → PC** : 43,1 s de parole sont devenues 433 octets, en 3 paquets et environ 4,5 s d'antenne, contre 4 311 octets, 25 paquets et environ 44 s en Codec2. Les 5 paquets des deux messages du test sont arrivés, avec un accusé de réception chacun et un SNR de 6 à 7 dB. Sur le PC d'arrivée, ils ont été affichés et lus à voix haute.
 
 Le texte est **6 à 18 fois plus léger** que la voix compressée : plus tu parles vite et sans pause, plus l'écart se réduit. La transcription n'est pas parfaite : on a eu par exemple « divas » pour *device* et « récits » pour *reçus*. C'est pour ça que le script te montre le texte et te laisse le corriger avant l'envoi.
+
+**Ce qu'on a appris ensuite :**
+
+- **Une note Codec2 qui « sonne comme du bruit »** venait du son autour du micro, pas du code : une vidéo tournait sur un téléphone à côté. Avec ce bruit, seules 11 à 25 % des trames de la note contenaient une voix nette, contre 52 à 66 % pour une voix enregistrée au calme. Codec2 ne sait décrire qu'une seule voix : tout le reste devient du bruit. Le script mesure maintenant la prise de son et te prévient (v1.5).
+- **Un long message de 7 paquets** n'a reçu aucun accusé, et les morceaux sont arrivés par deux, à plusieurs minutes d'écart. L'explication la plus probable : la carte attendait son droit d'émettre (règle des 10 %) et renvoyait les paquets non confirmés. Le script demande maintenant confirmation au-delà de 3 paquets, s'arrête après 2 échecs de suite, explique les refus et attend jusqu'à 5 minutes entre deux morceaux à l'arrivée (v1.6).
 
 ## Matériel
 
@@ -88,7 +98,7 @@ Tout est gratuit :
 
 Testé sous **Windows**. Linux et macOS devraient fonctionner mais n'ont pas été testés : remplace `py` par `python3`, et les ports s'appellent `/dev/ttyUSB0` ou `/dev/cu.usbserial-…`.
 
-Le script utilise `meshtastic` (dialogue avec la carte), `faster-whisper` (transcription locale), `sounddevice` (micro) et la voix intégrée de Windows (lecture à voix haute).
+Le script utilise `meshtastic` (dialogue avec la carte), `faster-whisper` (transcription locale), `sounddevice` (micro et haut-parleurs), `pycodec2` (notes vocales) et la voix intégrée de Windows (lecture à voix haute). En option, `pyrnnoise` réduit le bruit de fond des notes vocales.
 
 ---
 
@@ -131,7 +141,7 @@ cd C:\projets\TrailNet
 explorer .
 ```
 
-La dernière commande ouvre le dossier : copies-y les fichiers de ce dépôt (bouton de téléchargement **ZIP** en haut de la page du dépôt, ou `git clone`).
+La dernière commande ouvre le dossier : copies-y les fichiers de ce dépôt (bouton vert **Code → Download ZIP** en haut de la page du dépôt, ou `git clone`).
 
 > Un nom de dossier avec un espace, comme `Sekou Lamine` ? Mets-le entre guillemets : `cd "Sekou Lamine"`.
 
@@ -141,7 +151,23 @@ La dernière commande ouvre le dossier : copies-y les fichiers de ce dépôt (bo
 py -m pip install -r requirements.txt
 ```
 
-Si pip ne trouve pas un seul des paquets demandés, **il n'installe rien du tout**. Une faute de frappe dans un nom suffit : relis la commande si une erreur s'affiche.
+Si pip ne trouve pas l'un des paquets demandés, **il n'installe rien du tout**. Une faute de frappe dans un nom suffit : relis la commande si une erreur s'affiche.
+
+**4. (Optionnel) Le débruitage des notes vocales.**
+
+```powershell
+py -m pip install pyrnnoise --no-deps
+```
+
+`--no-deps` est voulu : ce paquet tire d'habitude des bibliothèques audio lourdes dont le script n'a pas besoin. Le script n'utilise que le petit moteur RNNoise qu'il contient.
+
+**5. Vérifie la version du script.**
+
+```powershell
+py trailnet_pc.py --version
+```
+
+Tu dois lire `TrailNet v1.6`. Si tu as plusieurs PC, vérifie que **tous** ont la même version.
 
 ## Étape 3 — Tester la transcription, sans carte
 
@@ -149,18 +175,18 @@ Si pip ne trouve pas un seul des paquets demandés, **il n'installe rien du tout
 py trailnet_pc.py dicter --essai
 ```
 
-Au premier lancement, le modèle Whisper `small` se télécharge (environ 460 Mo). **C'est la seule connexion à internet de tout le projet** : ensuite, le script charge le modèle depuis le disque, sans réseau.
+Au premier lancement, le modèle Whisper `small` se télécharge (environ 460 Mo). **C'est la seule fois où le script se connecte à internet** : ensuite, il charge le modèle depuis le disque, sans réseau.
 
 Appuie sur Entrée, parle, appuie de nouveau sur Entrée. Tu dois voir :
 
 ```
    Transcrit en 2.9 s : « On fait une pause au col, on repart dans vingt minutes. »
    3.8 s de parole → 55 octets de texte (la voix en Codec2 : 380 octets, soit 7× plus).
-   1 paquet(s) · ≈ 0.8 s de temps d'antenne.
+   1 paquet(s) · ≈ 0.8 s de temps d'antenne (0.2 % de ton quota de l'heure).
    Mode essai : rien n'est envoyé.
 ```
 
-Tape `q` pour quitter.
+La durée de parole ne compte que les moments où tu parles : les silences sont retirés. Tape `q` pour quitter.
 
 ## Étape 4 — Brancher une carte et trouver son port
 
@@ -204,7 +230,7 @@ Attends que l'écran revienne, branche l'autre carte et recommence avec un autre
 
 ## Étape 6 — Créer ton canal privé
 
-Par défaut, Meshtastic utilise un canal public, dont la clé est connue de tous les utilisateurs. En le testant à Lille, nos cartes ont d'ailleurs aussitôt repéré deux appareils inconnus du voisinage.
+Par défaut, Meshtastic utilise un canal public, dont la clé est connue de tous les utilisateurs. Quand on l'a testé à Lille, nos cartes ont d'ailleurs aussitôt repéré deux appareils inconnus du voisinage.
 
 La commande `canal` fabrique une **clé aléatoire de 256 bits**, l'installe sur tes cartes **l'une après l'autre**, puis l'oublie. Elle n'est jamais affichée et jamais écrite sur le disque. Avec un seul câble de données, tu fais tout depuis un seul PC :
 
@@ -220,7 +246,10 @@ py trailnet_pc.py canal --port COM3
    Port de cette carte [COM3] :
    ✓ Canal « TrailNet » installé sur Sekou B (!e5f6a7b8).
 
+   Branche la carte suivante, attends son écran d'accueil, puis Entrée · q si c'était la dernière : q
+
    2 carte(s) partagent le canal « TrailNet » : Sekou A (!a1b2c3d4), Sekou B (!e5f6a7b8)
+   La clé n'existe plus que dans ces cartes. Pour ajouter un proche plus tard, il scanne le QR code du canal depuis l'app Meshtastic, sur ton écran.
 ```
 
 Par défaut, **la position n'est pas partagée**. Pour la partager uniquement avec les membres du canal, ajoute `--position precise`.
@@ -241,14 +270,16 @@ Le script te demande à qui envoyer si la carte connaît plusieurs appareils. Le
    Destinataire : Sekou B (!e5f6a7b8) · chiffrement par clé publique
    Transcrit en 2.9 s : « Ceci est le tout premier test que j'ai réalisé sur ce projet. »
    4.6 s de parole → 63 octets de texte (la voix en Codec2 : 460 octets, soit 7× plus).
-   1 paquet(s) · ≈ 0.9 s de temps d'antenne.
+   1 paquet(s) · ≈ 0.9 s de temps d'antenne (0.2 % de ton quota de l'heure).
    Envoyer ? [Entrée = oui · n = non · ou tape une correction] :
    → envoi… reçu par Sekou B
 ```
 
-**« reçu par … »** signifie que la carte B a renvoyé un accusé de réception. Le message s'affiche aussi sur son écran, et sur le téléphone s'il y est relié en Bluetooth.
+**« reçu par … »** signifie que la carte B a renvoyé un accusé de réception. Si la carte B n'a pas encore envoyé sa clé publique, le script te prévient : le message part alors chiffré avec la clé du canal, d'où l'intérêt d'avoir créé ton canal privé à l'étape 6. Le message s'affiche aussi sur son écran, et sur le téléphone s'il y est relié en Bluetooth.
 
 Pour écrire à **tout le canal** plutôt qu'à une seule carte, ajoute `--canal`.
+
+**Les longs messages.** Au-delà de 3 paquets, le script te demande confirmation : un long message use ton quota d'émission et peut arriver en retard. Les morceaux partent un par un, chacun avec son accusé. Après **2 échecs de suite**, le script s'arrête, te dit pourquoi (hors de portée, limite des 10 %…) et affiche le temps d'émission de ta carte sur la dernière heure. Mieux vaut plusieurs messages courts qu'un long.
 
 ## Étape 8 — Test 2 : lecture à voix haute
 
@@ -259,8 +290,8 @@ py trailnet_pc.py ecouter --port COM4 --voix
 ```
 
 ```
-   Lecture à voix haute activée : Microsoft Hortense - French (France) (hors ligne).
-   En attente de messages… (Ctrl+C pour quitter)
+   Lecture à voix haute activée : Microsoft Hortense Desktop - French (hors ligne).
+   En attente de messages et de notes vocales… (Ctrl+C pour quitter)
 
    [21:47] Sekou A (!a1b2c3d4) · message direct, chiffré par clé publique · SNR 9.5 dB
    « On fait une pause au col, on repart dans vingt minutes. »
@@ -268,9 +299,77 @@ py trailnet_pc.py ecouter --port COM4 --voix
 
 … et le PC le dit à voix haute.
 
-Un message long part en plusieurs paquets, numérotés « (1/3) », « (2/3) »… À l'arrivée, le script attend d'avoir tous les morceaux, les recolle dans l'ordre, puis affiche et lit le message **en une seule fois**. Si un morceau se perd, il rend ce qu'il a reçu au bout de 90 s, avec la mention « incomplet ».
+Un message long part en plusieurs paquets, numérotés « (1/3) », « (2/3) »… À l'arrivée, le script attend d'avoir tous les morceaux, les recolle dans l'ordre, puis affiche et lit le message **en une seule fois**. Si plus aucun morceau n'arrive pendant **5 minutes**, il rend ce qu'il a reçu, avec la mention « incomplet ».
 
 **Un seul PC ?** Mets-le en `ecouter --voix` sur la carte A, relie ton téléphone à la carte B en Bluetooth, et envoie un message depuis l'app, dans le canal « TrailNet ». Il traverse la radio, arrive sur la carte A et le PC le lit. C'est aussi la meilleure façon de vérifier que tes deux cartes partagent bien le même canal privé.
+
+## Étape 9 — Ta vraie voix, en Codec2
+
+Le texte est léger, mais ce n'est pas ta voix. **Codec2** est un codec libre conçu pour la radio : au lieu d'envoyer le son, il envoie une description de ta voix (hauteur, timbre, énergie), 25 fois par seconde. En 700C, il lui suffit de **700 bits par seconde**. Le résultat est un peu robotique, mais on reconnaît la personne et on comprend ce qu'elle dit.
+
+Sa limite : c'est un **vocodeur**, il sait décrire **une seule voix**. Une télé, de la musique, une vidéo ou un ventilateur à côté de toi, et la note sonne comme du bruit. On l'a vécu (voir [Ce qu'on a mesuré](#ce-quon-a-mesuré)).
+
+**1. Écoute d'abord, sans carte.**
+
+```powershell
+py trailnet_pc.py vocal --essai
+```
+
+```
+   Note vocale en Codec2 700C, 30 s de parole au maximum.
+   ● J'écoute… parle, puis appuie sur Entrée pour arrêter.
+   Micro : 82 % de voix nette · voix 38 dB au-dessus du fond.
+   10.0 s de voix → 1000 octets en Codec2 700C · 6 paquet(s) · ≈ 10 s d'antenne (3 % de ton quota de l'heure).
+   Mode essai : rien n'est envoyé. Voici ce que l'autre PC entendrait (C:\projets\TrailNet\messages_vocaux\envoi_…_700C.wav) :
+```
+
+Le script retire les silences, coupe les graves (souffle, chocs sur le micro), règle le niveau, encode, puis te fait écouter **exactement ce que l'autre PC entendra**. Le fichier reste dans le dossier `messages_vocaux`.
+
+La ligne **Micro** te dit si la prise de son convient. Si le script affiche « ⚠ Il y a beaucoup de bruit autour de toi », coupe la source de bruit, rapproche-toi du micro (15 à 20 cm), ou ajoute `--debruiter` (étape 2.4).
+
+**2. Compare les quatre qualités.**
+
+```powershell
+py trailnet_pc.py vocal --comparer
+```
+
+Tu enregistres une fois, le script te fait écouter la même phrase en 700C, 1200, 1600 et 3200, et enregistre les 5 fichiers (original compris). Ordre de grandeur pour **30 s de parole** :
+
+| Qualité | Octets | Paquets | Temps d'antenne | Part du quota de l'heure | Notes de 30 s par heure |
+|---|---|---|---|---|---|
+| 700C (défaut) | 3 000 | 18 | ≈ 31 s | 9 % | ≈ 11 |
+| 1200 | 4 500 | 26 | ≈ 45 s | 13 % | ≈ 7 |
+| 1600 | 6 000 | 35 | ≈ 61 s | 17 % | ≈ 5 |
+| 3200 | 12 000 | 69 | ≈ 122 s | 34 % | ≈ 2 |
+
+Pour comparer : un message texte d'une phrase prend moins d'une seconde d'antenne, soit plusieurs centaines de messages par heure.
+
+**3. Envoie une note pour de vrai.** Sur le PC 2, laisse tourner `ecouter --voix` (étape 8). Sur le PC 1 :
+
+```powershell
+py trailnet_pc.py vocal --port COM3
+```
+
+```
+   Destinataire : Sekou B (!e5f6a7b8) · chiffrement par clé publique
+   …
+   [Entrée = envoyer · e = écouter d'abord · n = annuler] :
+   → morceau 1/6… reçu par Sekou B
+   …
+```
+
+Sur le PC 2 :
+
+```
+   … Sekou A : note vocale, morceau 1/6 reçu
+   …
+   [21:52] Sekou A (!a1b2c3d4) · message direct, chiffré par clé publique · SNR 7.0 dB
+   🎙 Note vocale de 10.0 s (Codec2 700C) · enregistrée : C:\projets\TrailNet\messages_vocaux\20261015-215200_Sekou_A.wav
+```
+
+… puis le PC annonce « Note vocale de Sekou A » et la joue. Si un morceau se perd, la note est jouée quand même quand plus rien n'arrive pendant 5 minutes, avec un silence à la place du trou.
+
+Options utiles : `--qualite 1200` (ou `1600`, `3200`) pour une voix plus fidèle mais plus lourde, `--max 15` pour limiter la durée (100 s au maximum), `--fichier note.wav` pour envoyer un enregistrement existant.
 
 ---
 
@@ -278,45 +377,62 @@ Un message long part en plusieurs paquets, numérotés « (1/3) », « (2/3) »�
 
 | Commande | Ce qu'elle fait |
 |---|---|
+| `py trailnet_pc.py --version` | Affiche la version du script |
 | `py trailnet_pc.py ports` | Liste les ports série, repère les cartes LoRa |
 | `py trailnet_pc.py canal --port COM3` | Crée un canal privé et l'installe carte après carte |
-| `py trailnet_pc.py noeuds --port COM3` | Liste les appareils connus de la carte, et s'ils ont envoyé leur clé publique |
+| `py trailnet_pc.py noeuds --port COM3` | Liste les appareils connus de la carte, s'ils ont envoyé leur clé publique, et le temps d'émission de ta carte sur la dernière heure |
 | `py trailnet_pc.py dicter --port COM3` | Micro → texte → message direct chiffré, avec accusé de réception |
 | `py trailnet_pc.py dicter --port COM3 --canal` | Pareil, envoyé à tout le canal privé |
 | `py trailnet_pc.py dicter --essai` | Transcription seule, sans carte |
 | `py trailnet_pc.py dicter --essai --fichier note.wav` | Transcription d'un fichier WAV 16 bits |
-| `py trailnet_pc.py ecouter --port COM4 --voix` | Affiche les messages reçus et les lit à voix haute |
 | `--modele medium` (avec `dicter`) | Transcription plus précise, plus lente (≈ 1,5 Go) |
+| `py trailnet_pc.py vocal --essai` | Note vocale Codec2 écoutée en local, sans carte |
+| `py trailnet_pc.py vocal --comparer` | La même note dans les 4 qualités, pour choisir |
+| `py trailnet_pc.py vocal --port COM3` | Micro → note vocale Codec2 → message direct chiffré |
+| `--qualite 700C` · `1200` · `1600` · `3200` (avec `vocal`) | Débit Codec2 (défaut : 700C, le plus léger) |
+| `--max 30` (avec `vocal`) | Secondes de parole au maximum (défaut : 30, jusqu'à 100) |
+| `--debruiter` (avec `vocal`) | Réduit le bruit de fond avant d'encoder (étape 2.4) |
+| `py trailnet_pc.py ecouter --port COM4 --voix` | Affiche les messages reçus et les lit à voix haute ; joue et enregistre les notes vocales |
 
 ## Dépannage
 
 | Ce que tu vois | Pourquoi | Que faire |
 |---|---|---|
 | `Aucun port trouvé` | Câble « charge seule » ou pilote absent | Câble de données, pilote CP210x, puis `Get-PnpDevice` (étape 4) |
-| `No module named 'meshtastic'` (ou `'pubsub'`) | L'installation a échoué ou a visé une autre version de Python | Relance l'étape 2.3 avec **le même** `py` que pour lancer le script |
+| `No module named 'meshtastic'` (ou `'pubsub'`, `'pycodec2'`) | L'installation a échoué ou a visé une autre version de Python | Relance l'étape 2.3 avec **le même** `py` que pour lancer le script |
+| `invalid choice: 'vocal'` ou `'canal'` | Ancienne version du script sur ce PC | Remplace `trailnet_pc.py` par celui de ce dépôt, puis vérifie avec `--version` |
 | `could not open port 'COM3': FileNotFoundError` | Aucune carte sur ce port | Relance `ports` et utilise le bon numéro |
-| `Connection timed out` | Carte encore en train de démarrer, ou téléphone connecté | Attends 10 s, déconnecte le téléphone dans l'app, réessaie |
-| Le port est « utilisé par un autre processus » | Site Meshtastic, flasheur ou autre terminal ouvert | Ferme-les |
+| `Timed out waiting for connection completion` | Carte encore en train de démarrer, ou téléphone connecté | Attends 10 s, déconnecte le téléphone dans l'app, réessaie |
+| `PermissionError(13, 'Accès refusé.' …)` sur le port | Le port est déjà ouvert par le site Meshtastic, le flasheur ou un autre terminal | Ferme-les, puis réessaie |
 | `Impossible de trouver un paramètre positionnel` dans PowerShell | Un espace dans un nom de dossier | Guillemets : `cd "Mon Dossier"` |
-| La voix ne lit que le premier message | Ancienne version du script | Utilise celle de ce dépôt (v1.3, voix de Windows) |
+| La voix ne lit que le premier message | Version du script antérieure à la v1.1 | Prends la version de ce dépôt (voix de Windows, SAPI) |
 | Aucune voix française | Pas de voix française installée | Paramètres Windows → Heure et langue → Voix → Ajouter |
-| `pas d'accusé de réception en 60 s` | Carte B éteinte, hors de portée, ou clés publiques pas encore échangées | Vérifie avec `noeuds` (« clé publique reçue »), attends une minute après l'allumage |
+| `pas d'accusé de réception en 60 s` | Carte B éteinte, hors de portée, clés publiques pas encore échangées, ou carte qui attend son quota | Vérifie avec `noeuds` (« clé publique reçue », temps d'émission), attends une minute après l'allumage |
+| `bloqué par la limite européenne de temps d'émission` | Ta carte a émis 10 % du temps sur la dernière heure | Attends quelques minutes ; envoie plus court (texte plutôt que voix, 700C plutôt que 3200) |
+| Les morceaux d'un long message arrivent à plusieurs minutes d'écart | La carte attend son droit d'émettre et renvoie les paquets non confirmés | Normal avec la règle des 10 % : le PC d'arrivée attend jusqu'à 5 min entre deux morceaux. Préfère plusieurs messages courts |
 | Un message de canal n'arrive pas, alors que les messages directs passent | Les deux cartes n'ont pas la même clé de canal | Relance `canal` et passe **toutes** les cartes dans la même session |
 | Mots mal transcrits | Micro loin, phrases longues, mots techniques | Parle près du micro, en phrases courtes, corrige avant d'envoyer, ou essaie `--modele medium` |
+| Phrase inventée, du genre « Sous-titres réalisés par… » | Whisper « hallucine » sur du silence ou du bruit | Le script retire les plus connues ; parle plus près du micro, dans une pièce calme |
+| La note vocale sonne comme du bruit | Bruit autour du micro (télé, musique, vidéo, ventilateur) | Regarde la ligne « Micro » ; coupe la source, rapproche-toi, ou ajoute `--debruiter` |
+| `débruitage indisponible` | Le paquet `pyrnnoise` n'est pas installé | `py -m pip install pyrnnoise --no-deps` (étape 2.4) |
+| `Je n'entends pas de voix` | Micro coupé, mauvais micro par défaut, ou parole trop faible | Paramètres Windows → Son → Entrée : choisis le bon micro et monte son volume |
+| Note vocale reçue mais rien n'est joué | `ecouter` lancé sans `--voix` | Relance avec `--voix`, ou ouvre le fichier dans `messages_vocaux` |
 
 ## Ce qui est protégé, ce qui ne l'est pas
 
 **Protégé :**
 
-- **Messages directs** : chiffrés avec la clé publique de la carte destinataire (Meshtastic 2.5 et plus récent). Seule cette carte peut les lire.
+- **Messages directs**, texte et notes vocales : chiffrés avec la clé publique de la carte destinataire (Meshtastic 2.5 et plus récent). Seule cette carte peut les lire.
 - **Canal privé** : chiffré avec ta clé de 256 bits, que seules tes cartes connaissent.
 - **Position** : pas partagée par défaut. Avec `--position precise`, seulement aux membres du canal.
-- **Ta voix** : elle ne quitte jamais le PC. Seul le texte part, par radio.
+- **Ta voix** : avec `dicter`, elle ne quitte jamais le PC, seul le texte part. Avec `vocal`, c'est une description compressée de ta voix qui part, chiffrée comme un message direct.
 
 **Pas protégé** (c'est le fonctionnement de Meshtastic, pas un bug du script) :
 
 - chaque émission radio porte **en clair le numéro de la carte** qui émet ;
 - n'importe qui équipé d'un récepteur peut **détecter** qu'une radio émet, et approximativement d'où.
+
+**À savoir :** les notes vocales sont enregistrées en clair dans le dossier `messages_vocaux`, à côté du script : les notes reçues sur le PC d'arrivée, et sur le PC de départ, l'aperçu de chaque note envoyée et les fichiers de `--comparer`. Supprime-les quand tu n'en as plus besoin. Le fichier `.gitignore` les empêche d'être mises en ligne par erreur avec le code.
 
 ## Portée : à quoi t'attendre
 
@@ -328,16 +444,27 @@ Ce sont des ordres de grandeur ; ça dépend énormément du terrain.
 
 Deux cartes **ne relient pas deux villes** : Lille–Paris, c'est environ 200 km. Pour se parler à cette distance, il faudrait toute une chaîne de relais entre les deux. Fais tes tests dans le même quartier, puis éloigne-toi progressivement.
 
-## Réglementation
+## Réglementation : la règle des 10 %
 
-En Europe, la bande **868 MHz** est utilisable sans licence, à condition de respecter des limites de puissance, de fréquences et de temps d'émission. Le firmware Meshtastic applique ces limites dès que la région **EU_868** est choisie (étape 5). Ne modifie pas la puissance ni les fréquences à la main, et n'émets jamais sans antenne.
+En Europe, la bande **868 MHz** est utilisable sans licence, à condition de respecter des limites de puissance, de fréquences et de temps d'émission. Avec la région **EU_868**, Meshtastic émet entre **869,4 et 869,65 MHz**, où chaque appareil ne doit pas émettre plus de **10 % du temps**, calculé chaque minute **sur l'heure glissante** : 360 s d'émission par heure au maximum. Le firmware applique cette limite tout seul : une carte qui l'atteint **arrête d'émettre** jusqu'à ce qu'elle en ait de nouveau le droit ([documentation Meshtastic](https://meshtastic.org/docs/configuration/radio/lora/)).
+
+En pratique :
+
+- un message texte d'une phrase coûte moins d'une seconde : tu ne verras jamais la limite ;
+- une note vocale de 30 s en 700C coûte environ 31 s, soit 9 % du quota ; en 3200, plus du tiers ;
+- `noeuds` affiche le temps d'émission de ta carte sur la dernière heure, et le script te prévient à partir de 8 %.
+
+N'active **jamais** l'option « Override Duty Cycle », ne modifie pas la puissance ni les fréquences à la main, et n'émets jamais sans antenne.
 
 ## Pour aller plus loin
 
 Des pistes d'exercices, de la plus simple à la plus ambitieuse :
 
 - **Vocabulaire** : aider Whisper avec une liste de mots du domaine (col, refuge, sentier…).
-- **Vraie voix** : encoder la note en Codec2, la découper en paquets, la réassembler et la jouer à l'arrivée, puis comparer avec le texte.
+- **Conversation** : un seul programme qui dicte et écoute en même temps, pour se répondre comme avec un talkie-walkie.
+- **Réglage radio** : les préréglages MEDIUM_FAST (environ 3 fois moins de temps d'antenne) ou SHORT_FAST (environ 10 fois moins) portent moins loin mais laissent passer plus de voix. À mesurer sur le terrain.
+- **Compression du texte** : gagner encore des octets sur chaque message.
+- **Meilleure voix** : les codecs à réseau de neurones (LPCNet, RADE) promettent une voix plus naturelle au même débit.
 - **GPS** : ajouter un module GNSS en 3,3 V et partager la position, seulement dans le canal privé.
 - **Batterie** : une LiPo 3,7 V pour mesurer l'autonomie réelle d'une carte.
 - **Raspberry Pi** : remplacer le PC par un ordinateur embarqué, avec micro et haut-parleur.
@@ -350,21 +477,31 @@ L'idée de transmettre « ce qui est dit » plutôt que « le son » est ancienn
 - **2025** — Université Nazarbayev, [*Voice Over LoRa*](https://nur.nu.edu.kz/items/29925539-2eea-4822-83d6-ae36bd809397) : Whisper, un modèle de langage qui résume, et une synthèse vocale, sur Raspberry Pi 4 avec LoRa, hors ligne.
 - **2026** — SLIIT, [*Voice Communication over Meshtastic Networks*](https://rda.sliit.lk/handle/123456789/5109) : sur Meshtastic, la voix Codec2 demande des minutes de transmission, la transcription un seul paquet.
 
-Briques utilisées : [Meshtastic](https://meshtastic.org) (GPL-3.0), [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (MIT) et les modèles [Whisper](https://github.com/openai/whisper) d'OpenAI (MIT).
+Briques utilisées : [Meshtastic](https://meshtastic.org) (GPL-3.0), [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (MIT) et les modèles [Whisper](https://github.com/openai/whisper) d'OpenAI (MIT), [Codec2](https://github.com/drowe67/codec2) de David Rowe (LGPL-2.1) via `pycodec2`, et, en option, [RNNoise](https://github.com/xiph/rnnoise) de Xiph (BSD-3-Clause).
 
 ---
 
 ## Structure du dépôt
 
 ```
-trailnet-proto/
+TrailNet/
 ├── README.md          ce guide
-├── trailnet_pc.py     le script (ports, canal, noeuds, dicter, ecouter)
+├── trailnet_pc.py     le script (ports, canal, noeuds, dicter, vocal, ecouter)
 ├── requirements.txt   bibliothèques Python
 ├── LICENSE            GNU GPL v3
+├── .gitignore         fichiers à ne jamais mettre en ligne
 └── docs/
     └── schema.svg     le schéma du montage
 ```
+
+Le dossier `messages_vocaux/` est créé tout seul sur ton PC, à côté du script. Il n'est jamais mis en ligne.
+
+## Versions
+
+- **v1.6** — longs messages fiables : confirmation au-delà de 3 paquets, arrêt après 2 échecs de suite, refus expliqués (dont la règle des 10 %), temps d'émission de la carte affiché, attente jusqu'à 5 minutes entre deux morceaux à l'arrivée.
+- **v1.5** — qualité des notes vocales : mesure de la prise de son, filtre des graves, débruitage (`--debruiter`), comparaison des qualités (`--comparer`).
+- **v1.4** — notes vocales Codec2 (`vocal`) ; `ecouter` joue et enregistre les notes reçues.
+- **v1.0 à v1.3** — `dicter` et `ecouter`, canal privé (`canal`), lecture à voix haute fiable sous Windows, messages longs recollés à l'arrivée, durée de parole comptée sans les silences.
 
 ## Auteurs
 
