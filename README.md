@@ -4,11 +4,20 @@
 
 Deux cartes LoRa à 23 €, deux PC, un script Python. Pas de serveur, pas de carte SIM, pas d'abonnement, pas de compte. Ce dépôt contient tout ce qu'il faut pour refaire le montage chez toi, étape par étape, avec les vraies erreurs qu'on a rencontrées et comment on les a corrigées.
 
+![Schéma du prototype](schema.svg)
+
 TrailNet vise un communicateur hors réseau pour la randonnée. Ce prototype en valide la première brique : **la parole transmise sous forme de texte**. Il sait aussi envoyer une **vraie note vocale**, compressée avec Codec2, pour comparer (étape 9). Le PC joue le rôle du futur ordinateur embarqué (micro, transcription, synthèse vocale) ; la carte LoRa n'est que la radio.
 
 > ⚠ **Prototype de laboratoire.** Ce n'est pas un moyen d'alerte. En montagne, garde ton téléphone, le 112 et les moyens de secours officiels.
 
-**Version du script : v1.6** (`py trailnet_pc.py --version`). Testé en vrai entre deux PC : la dictée, la réception et la lecture à voix haute. Les notes vocales par radio sont testées hors carte ; l'essai réel est la prochaine étape.
+**Version du script : v1.7.1** (`py trailnet_pc.py --version`). Testé en vrai entre deux PC, dans les deux sens : la dictée, la réception, la lecture à voix haute et le mode conversation, messages longs en 2 et 3 paquets compris. Les notes vocales par radio sont testées hors carte ; l'essai réel est la prochaine étape.
+
+**Par où commencer.** Un seul script, deux niveaux :
+
+1. **Un sens** (étapes 1 à 8) : un PC dicte, l'autre affiche et lit à voix haute. C'est le montage le plus simple pour vérifier que tout fonctionne.
+2. **Les deux sens** (étape 10) : `converser` sur chaque PC, et on se répond sans changer de commande, comme avec un talkie-walkie.
+
+L'étape 9 (ta vraie voix, en Codec2) est facultative. Chaque version publiée reste téléchargeable dans les [Releases](https://github.com/diarrayelen-cell/TrailNet/releases) du dépôt.
 
 ---
 
@@ -28,14 +37,15 @@ TrailNet vise un communicateur hors réseau pour la randonnée. Ce prototype en 
 12. [Étape 7 — Test 1 : dicter et recevoir](#étape-7--test-1--dicter-et-recevoir)
 13. [Étape 8 — Test 2 : lecture à voix haute](#étape-8--test-2--lecture-à-voix-haute)
 14. [Étape 9 — Ta vraie voix, en Codec2](#étape-9--ta-vraie-voix-en-codec2)
-15. [Toutes les commandes](#toutes-les-commandes)
-16. [Dépannage](#dépannage)
-17. [Ce qui est protégé, ce qui ne l'est pas](#ce-qui-est-protégé-ce-qui-ne-lest-pas)
-18. [Portée : à quoi t'attendre](#portée--à-quoi-tattendre)
-19. [Réglementation : la règle des 10 %](#réglementation--la-règle-des-10-)
-20. [Pour aller plus loin](#pour-aller-plus-loin)
-21. [Ce qui existe déjà](#ce-qui-existe-déjà)
-22. [Structure du dépôt, versions, auteurs, licence](#structure-du-dépôt)
+15. [Étape 10 — Converser dans la même fenêtre](#étape-10--converser-dans-la-même-fenêtre)
+16. [Toutes les commandes](#toutes-les-commandes)
+17. [Dépannage](#dépannage)
+18. [Ce qui est protégé, ce qui ne l'est pas](#ce-qui-est-protégé-ce-qui-ne-lest-pas)
+19. [Portée : à quoi t'attendre](#portée--à-quoi-tattendre)
+20. [Réglementation : la règle des 10 %](#réglementation--la-règle-des-10-)
+21. [Pour aller plus loin](#pour-aller-plus-loin)
+22. [Ce qui existe déjà](#ce-qui-existe-déjà)
+23. [Structure du dépôt, versions, auteurs, licence](#structure-du-dépôt)
 
 ---
 
@@ -165,7 +175,7 @@ py -m pip install pyrnnoise --no-deps
 py trailnet_pc.py --version
 ```
 
-Tu dois lire `TrailNet v1.6`. Si tu as plusieurs PC, vérifie que **tous** ont la même version.
+Tu dois lire `TrailNet v1.6.1`. Si tu as plusieurs PC, vérifie que **tous** ont la même version.
 
 ## Étape 3 — Tester la transcription, sans carte
 
@@ -262,7 +272,7 @@ Carte A sur le PC 1, carte B alimentée (sur le PC 2, ou par n'importe quel char
 py trailnet_pc.py dicter --port COM3
 ```
 
-Le script te demande à qui envoyer si la carte connaît plusieurs appareils. Les appareils d'autres utilisateurs Meshtastic peuvent apparaître dans la liste : choisis le tien, avec le nom ou l'identifiant affiché sur l'écran de ta carte B.
+Le script te demande **toujours** à qui envoyer, même si la carte ne connaît qu'un appareil. Les appareils d'autres utilisateurs Meshtastic du voisinage apparaissent aussi dans la liste : choisis le tien, avec le nom ou l'identifiant affiché sur l'écran de ta carte B. Pour ne plus avoir à choisir, ajoute `--vers` suivi de ce nom ou de cet identifiant, par exemple `--vers !02ec192c`.
 
 ```
    Destinataire : Sekou B (!e5f6a7b8) · chiffrement par clé publique
@@ -369,6 +379,40 @@ Sur le PC 2 :
 
 Options utiles : `--qualite 1200` (ou `1600`, `3200`) pour une voix plus fidèle mais plus lourde, `--max 15` pour limiter la durée (100 s au maximum), `--fichier note.wav` pour envoyer un enregistrement existant.
 
+## Étape 10 — Converser dans la même fenêtre
+
+Jusqu'ici, un PC envoie (`dicter`, `vocal`) et l'autre écoute (`ecouter`). Pour se répondre comme avec un talkie-walkie, lance **la même commande sur les deux PC** :
+
+```powershell
+py trailnet_pc.py converser --port COM3
+```
+
+Le script charge Whisper, se connecte à la carte, te demande ton correspondant (ou utilise `--vers`), puis ouvre la conversation :
+
+```
+   Destinataire : SparkIA BOX2 (!e5f6a7b8) · chiffrement par clé publique
+   Lecture à voix haute activée : Microsoft Hortense Desktop - French (hors ligne).
+
+   Conversation ouverte. Les messages reçus s'affichent ici et sont lus à voix haute.
+
+[Entrée] parler · [v] note vocale · ou tape un message · [q] quitter :
+
+   [18:05] SparkIA BOX2 (!e5f6a7b8) · message direct, chiffré par clé publique · SNR 6.2 dB
+   « On arrive au refuge dans dix minutes. »
+   ↵ Entrée pour répondre
+```
+
+| Tu fais | Ce qui se passe |
+|---|---|
+| **Entrée** | Tu parles, Entrée pour arrêter. Le texte transcrit s'affiche : Entrée pour l'envoyer, `n` pour annuler, ou tape une correction |
+| **v** puis Entrée | Pareil, mais c'est une note vocale Codec2 qui part (`e` pour l'écouter d'abord) |
+| **Un texte** puis Entrée | Le texte part tel quel, sans passer par le micro |
+| **q** | Quitte la conversation |
+
+Ce qui arrive s'affiche tout de suite et **se lit à voix haute sans option** : pas besoin de `--voix` ici. Pendant que tu enregistres, le haut-parleur se tait, pour que le micro ne capte pas la voix de synthèse : un message reçu à ce moment-là est lu juste après. Si le PC est en train de lire quand tu appuies sur Entrée, il finit sa phrase, puis t'écoute.
+
+Options : `--vers` (correspondant), `--canal` (tout le canal privé), `--muet` (afficher sans lire), `--modele`, et pour les notes vocales `--qualite`, `--max`, `--debruiter`.
+
 ---
 
 ## Toutes les commandes
@@ -391,6 +435,8 @@ Options utiles : `--qualite 1200` (ou `1600`, `3200`) pour une voix plus fidèle
 | `--max 30` (avec `vocal`) | Secondes de parole au maximum (défaut : 30, jusqu'à 100) |
 | `--debruiter` (avec `vocal`) | Réduit le bruit de fond avant d'encoder (étape 2.4) |
 | `py trailnet_pc.py ecouter --port COM4 --voix` | Affiche les messages reçus et les lit à voix haute ; joue et enregistre les notes vocales |
+| `py trailnet_pc.py converser --port COM3` | Envoyer et recevoir dans la même fenêtre : parler, taper ou envoyer une note vocale, et entendre les réponses (étape 10) |
+| `--muet` (avec `converser`) | Affiche ce qui arrive sans le lire à voix haute |
 
 ## Dépannage
 
@@ -414,7 +460,9 @@ Options utiles : `--qualite 1200` (ou `1600`, `3200`) pour une voix plus fidèle
 | La note vocale sonne comme du bruit | Bruit autour du micro (télé, musique, vidéo, ventilateur) | Regarde la ligne « Micro » ; coupe la source, rapproche-toi, ou ajoute `--debruiter` |
 | `débruitage indisponible` | Le paquet `pyrnnoise` n'est pas installé | `py -m pip install pyrnnoise --no-deps` (étape 2.4) |
 | `Je n'entends pas de voix` | Micro coupé, mauvais micro par défaut, ou parole trop faible | Paramètres Windows → Son → Entrée : choisis le bon micro et monte son volume |
-| Note vocale reçue mais rien n'est joué | `ecouter` lancé sans `--voix` | Relance avec `--voix`, ou ouvre le fichier dans `messages_vocaux` |
+| Message ou note vocale reçus, mais rien n'est lu ni joué | `ecouter` lancé sans `--voix` (le script le rappelle au démarrage) | Relance avec `--voix`, ou utilise `converser`, qui lit sans option |
+| Le terminal se fige, les messages n'apparaissent qu'après Ctrl+C | « Mode d'édition rapide » de la console Windows : un clic dans la fenêtre met l'affichage en pause | Clic droit sur la barre de titre → Propriétés → Options → décoche « Mode d'édition rapide ». Sinon, appuie sur Échap pour reprendre |
+| `noeuds` affiche « vu jamais » | La carte n'a pas d'horloge | Depuis la v1.7, le script lui donne l'heure du PC à chaque connexion : les appareils entendus ensuite ont une heure |
 
 ## Ce qui est protégé, ce qui ne l'est pas
 
@@ -459,7 +507,7 @@ N'active **jamais** l'option « Override Duty Cycle », ne modifie pas la puissa
 Des pistes d'exercices, de la plus simple à la plus ambitieuse :
 
 - **Vocabulaire** : aider Whisper avec une liste de mots du domaine (col, refuge, sentier…).
-- **Conversation** : un seul programme qui dicte et écoute en même temps, pour se répondre comme avec un talkie-walkie.
+- **Conversation à plusieurs** : `converser --canal` marche déjà ; reste à afficher qui parle à qui et à gérer plusieurs correspondants.
 - **Réglage radio** : les préréglages MEDIUM_FAST (environ 3 fois moins de temps d'antenne) ou SHORT_FAST (environ 10 fois moins) portent moins loin mais laissent passer plus de voix. À mesurer sur le terrain.
 - **Compression du texte** : gagner encore des octets sur chaque message.
 - **Meilleure voix** : les codecs à réseau de neurones (LPCNet, RADE) promettent une voix plus naturelle au même débit.
@@ -484,18 +532,20 @@ Briques utilisées : [Meshtastic](https://meshtastic.org) (GPL-3.0), [faster-whi
 ```
 TrailNet/
 ├── README.md          ce guide
-├── trailnet_pc.py     le script (ports, canal, noeuds, dicter, vocal, ecouter)
+├── trailnet_pc.py     le script (ports, canal, noeuds, dicter, vocal, ecouter, converser)
 ├── requirements.txt   bibliothèques Python
 ├── LICENSE            GNU GPL v3
 ├── .gitignore         fichiers à ne jamais mettre en ligne
-└── docs/
-    └── schema.svg     le schéma du montage
+└── schema.svg         le schéma du montage
 ```
 
 Le dossier `messages_vocaux/` est créé tout seul sur ton PC, à côté du script. Il n'est jamais mis en ligne.
 
 ## Versions
 
+- **v1.7.1** — si une bibliothèque manque (par exemple `pycodec2`), le script donne la commande d'installation exacte au lieu d'une erreur brute ; README : « Par où commencer », en deux niveaux.
+- **v1.7** — mode conversation (`converser`) : envoyer et recevoir dans la même fenêtre, lecture à voix haute incluse, haut-parleur coupé pendant qu'on parle ; la carte prend l'heure du PC à la connexion ; `ecouter` rappelle l'option `--voix`.
+- **v1.6.1** — le destinataire d'un message direct est toujours demandé, pour ne jamais écrire par erreur à l'appareil d'un voisin ; Ctrl+C quitte proprement.
 - **v1.6** — longs messages fiables : confirmation au-delà de 3 paquets, arrêt après 2 échecs de suite, refus expliqués (dont la règle des 10 %), temps d'émission de la carte affiché, attente jusqu'à 5 minutes entre deux morceaux à l'arrivée.
 - **v1.5** — qualité des notes vocales : mesure de la prise de son, filtre des graves, débruitage (`--debruiter`), comparaison des qualités (`--comparer`).
 - **v1.4** — notes vocales Codec2 (`vocal`) ; `ecouter` joue et enregistre les notes reçues.

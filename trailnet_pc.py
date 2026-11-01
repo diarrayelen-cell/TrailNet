@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────────────
-#  TrailNet — prototype « PC + carte LoRa »                      v1.6
+#  TrailNet — prototype « PC + carte LoRa »                    v1.7.1
 #  Parler → texte ou note vocale → radio LoRa → affichage, lecture.
 #  Sparkia Box · Sekou & Issa · 2026
 #
@@ -16,6 +16,7 @@
 #    py trailnet_pc.py dicter  --port COM3         tu parles → texte → radio
 #    py trailnet_pc.py vocal   --port COM3         tu parles → voix Codec2 → radio
 #    py trailnet_pc.py ecouter --port COM4 --voix  réception, lecture à voix haute
+#    py trailnet_pc.py converser --port COM3       envoyer ET recevoir dans la même fenêtre
 #    py trailnet_pc.py dicter  --essai             transcription seule, sans carte
 #    py trailnet_pc.py vocal   --essai             note vocale écoutée en local, sans carte
 #
@@ -25,10 +26,10 @@
 #  la Free Software Foundation, version 3 ou (à ton choix) toute version
 #  ultérieure. Il est distribué SANS AUCUNE GARANTIE. Voir le fichier LICENSE.
 # ─────────────────────────────────────────────────────────────────────
-import argparse, base64, math, os, queue, re, secrets, struct, sys, threading, time, wave
+import argparse, base64, contextlib, math, os, queue, re, secrets, struct, sys, threading, time, wave
 from datetime import datetime
 
-VERSION = "1.6"
+VERSION = "1.7.1"
 SR = 16000          # Whisper travaille en 16 kHz mono
 SR_VOIX = 8000      # Codec2 travaille en 8 kHz mono
 MAX_OCTETS = 200    # texte par paquet (limite Meshtastic : 233 octets de données)
@@ -45,6 +46,13 @@ def temps_antenne(octets_utiles, sf=11, bw=250_000, cr=1, preambule=16, entete=2
     de = 1 if tsym > 0.016 else 0
     n = 8 + max(math.ceil((8 * pl - 4 * sf + 28 + 16) / (4 * (sf - 2 * de))) * (cr + 4), 0)
     return (preambule + 4.25) * tsym + n * tsym
+
+
+def conseil_module(e):
+    """Message clair quand une bibliothèque manque sur ce PC (ex. pycodec2)."""
+    py = f"py -{sys.version_info.major}.{sys.version_info.minor}" if sys.platform == "win32" else "python3"
+    return (f"Il manque la bibliothèque « {e.name} » sur ce PC. Installe-la avec le même Python "
+            f"que le script, dans le dossier du script :\n   {py} -m pip install -r requirements.txt")
 
 
 def part_du_quota(secondes):
@@ -498,6 +506,11 @@ def connecter(port, verifier=True):
                  "   Vérifie le port (commande « ports »), attends que la carte ait fini de démarrer,\n"
                  "   et ferme tout autre logiciel qui utilise ce port (site Meshtastic, autre terminal).")
     print(f"   Connecté à « {iface.getLongName()} » ({mon_id(iface)}).")
+    try:
+        # la carte n'a pas d'horloge : sans ça, elle note « vu jamais » pour les autres appareils
+        iface.localNode.setTime()            # comme « meshtastic --set-time » : l'heure du PC
+    except Exception:
+        pass
     if verifier:
         verifier_canal(iface)
     return iface
@@ -575,13 +588,17 @@ def choisir_destinataire(iface, vers):
     if not noeuds:
         sys.exit("La carte ne connaît encore aucun autre appareil. Allume l'autre carte et attends "
                  "une minute qu'elles se découvrent.")
-    if len(noeuds) == 1:
-        return noeuds[0]
-    print("   Plusieurs appareils connus :")
+    # Toujours demander, même s'il n'y a qu'un appareil : la carte entend aussi les
+    # appareils Meshtastic des voisins, et un message direct leur serait lisible.
+    print("   Appareils connus de la carte. Vérifie que c'est bien le tien (nom ou identifiant")
+    print("   affiché sur l'écran de ton autre carte) :")
     for i, n in enumerate(noeuds, 1):
-        print(f"     {i}. {n['nom']} ({n['id']})")
+        vu = datetime.fromtimestamp(n["vu"]).strftime("%d/%m %H:%M") if n["vu"] else "jamais"
+        print(f"     {i}. {n['nom']} ({n['id']}) · vu {vu}")
     while True:
-        r = input("   Numéro du destinataire : ").strip()
+        r = input("   Numéro du destinataire (q pour annuler) : ").strip().lower()
+        if r == "q":
+            sys.exit("   Annulé. Astuce : --vers suivi du nom ou de l'identifiant évite cette question.")
         if r.isdigit() and 1 <= int(r) <= len(noeuds):
             return noeuds[int(r) - 1]
 
@@ -741,6 +758,9 @@ class Lecteur:
         self.sapi = None
         if sys.platform == "win32":
             try:
+                if threading.current_thread() is not threading.main_thread():
+                    import pythoncom             # le moteur vocal de Windows, utilisé hors du fil
+                    pythoncom.CoInitialize()     # principal (mode conversation), doit être initialisé
                 import win32com.client
                 v = win32com.client.Dispatch("SAPI.SpVoice")
                 voix = v.GetVoices()
@@ -771,6 +791,115 @@ class Lecteur:
         m.say(phrase)
         m.runAndWait()
         m.stop()
+
+
+# ── réception (commandes « ecouter » et « converser ») ───────────────
+class Reception:
+    """Reçoit les textes et les notes vocales, les affiche, et les fait lire à voix haute.
+
+    La carte appelle `texte_recu` et `donnees_recues` depuis son propre fil d'exécution :
+    on affiche tout de suite, et ce qui doit être dit ou joué passe par une file que
+    `servir` vide, une phrase après l'autre. Le verrou `haut_parleur` est pris pendant
+    chaque lecture ; le mode conversation le prend aussi pendant qu'on enregistre, pour
+    que le micro ne capte pas la voix de synthèse.
+    """
+
+    def __init__(self, iface, voix, rappel=None):
+        self.iface, self.voix, self.rappel = iface, voix, rappel
+        self.file, self.assembleur, self.vocal = queue.Queue(), Assembleur(), ReceptionVocale()
+        self.haut_parleur = threading.Lock()
+        self.stop, self.pret = threading.Event(), threading.Event()
+        self.a_l_invite = False      # vrai quand le mode conversation attend « Entrée pour parler »
+
+    # pubsub ne garde qu'une référence faible : l'objet Reception doit rester en vie
+    def abonner(self):
+        from pubsub import pub
+        pub.subscribe(self.texte_recu, "meshtastic.receive.text")
+        pub.subscribe(self.donnees_recues, "meshtastic.receive.data.PRIVATE_APP")
+
+    def desabonner(self):
+        from pubsub import pub
+        for f, sujet in ((self.texte_recu, "meshtastic.receive.text"),
+                         (self.donnees_recues, "meshtastic.receive.data.PRIVATE_APP")):
+            try:
+                pub.unsubscribe(f, sujet)
+            except Exception:
+                pass
+
+    def _rappeler(self):
+        if self.rappel and self.a_l_invite:
+            print(self.rappel)
+
+    def annoncer(self, p, texte):
+        if self.voix:
+            self.file.put(("dire", f"Message de {nom_de(self.iface, expediteur(p))}. {texte}"))
+        self._rappeler()
+
+    def note_prete(self, note):
+        qui = note["qui"]
+        nom = nom_de(self.iface, qui)
+        incomplet = note["recus"] < note["total"]
+        chemin = sauver_wav(note["pcm"], f"{datetime.now():%Y%m%d-%H%M%S}_{nom}")
+        entete = decrire_paquet(self.iface, note["p"]) if note["p"] else f"{nom} ({qui})"
+        print(f"\n   {entete}")
+        print(f"   🎙 Note vocale de {note['duree']:.1f} s (Codec2 {note['qualite']})"
+              + (f" · incomplète : {note['recus']}/{note['total']} morceaux, silences à la place des trous"
+                 if incomplet else "") + f" · enregistrée : {chemin}")
+        if self.voix:
+            self.file.put(("dire", f"Note vocale de {nom}."))
+            self.file.put(("jouer", note["pcm"]))
+        self._rappeler()
+
+    def texte_recu(self, packet, interface):
+        complet = recevoir(interface, packet, self.assembleur)
+        if complet is not None:
+            self.annoncer(packet, complet)
+
+    def donnees_recues(self, packet, interface):
+        qui = expediteur(packet)
+        note, prog = self.vocal.ajouter(qui, packet.get("decoded", {}).get("payload", b""), packet)
+        if prog is None:
+            return                                   # pas un paquet TrailNet
+        if note is None:
+            print(f"   … {nom_de(self.iface, qui)} : note vocale, morceau {prog[0]}/{prog[1]} reçu")
+        else:
+            self.note_prete(note)
+
+    def verifier_expires(self):
+        """Messages et notes incomplets trop anciens : rendus quand même."""
+        try:
+            for p, texte in self.assembleur.expires():
+                if p is not None:
+                    afficher_message(self.iface, p, texte)
+                    self.annoncer(p, texte)
+            for note in self.vocal.expires():
+                self.note_prete(note)
+        except Exception as e:
+            print(f"   (erreur pendant la réception : {e})")
+
+    def servir(self, lecteur=None):
+        """Lit la file à voix haute jusqu'à `stop` (ou Ctrl+C dans le fil principal)."""
+        if self.voix and lecteur is None:
+            try:
+                lecteur = Lecteur()
+            except Exception as e:
+                print(f"   (voix de synthèse indisponible : {e} — les messages s'affichent seulement)")
+                self.voix = False
+        self.pret.set()
+        while not self.stop.is_set():
+            self.verifier_expires()
+            try:
+                quoi, contenu = self.file.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            with self.haut_parleur:
+                try:
+                    if quoi == "dire":
+                        lecteur.dire(contenu)
+                    else:
+                        jouer(contenu)
+                except Exception as e:                    # la voix plante : on continue d'écouter
+                    print(f"   (lecture impossible : {e})")
 
 
 # ── commandes ────────────────────────────────────────────────────────
@@ -859,6 +988,41 @@ def ecouter_reponses(iface):
     return recu                              # à garder en vie : pubsub ne garde qu'une référence faible
 
 
+def afficher_transcription(texte, dt, parole):
+    """Montre le texte compris et ce qu'il coûte en radio ; rend les morceaux à envoyer."""
+    n = len(texte.encode("utf-8"))
+    voix = math.ceil(parole * CODEC2_BPS / 8)
+    print(f"\n   Transcrit en {dt:.1f} s : « {texte} »")
+    print(f"   {parole:.1f} s de parole → {n} octets de texte "
+          f"(la voix en Codec2 : {voix} octets, soit {voix / max(n, 1):.0f}× plus).")
+    morceaux = decouper(texte)
+    ta = sum(temps_antenne(len(m.encode('utf-8'))) for m in morceaux)
+    print(f"   {len(morceaux)} paquet(s) · ≈ {ta:.1f} s de temps d'antenne "
+          f"({part_du_quota(ta):.1f} % de ton quota de l'heure).")
+    return morceaux
+
+
+def envoyer_texte(iface, dest, morceaux):
+    """Envoie un texte déjà découpé ; demande confirmation au-delà de 3 paquets."""
+    if len(morceaux) > 3:
+        r = input(f"   Ce message part en {len(morceaux)} paquets. Les longs messages peuvent "
+                  "arriver en retard\n   (quota européen de 10 %). Envoyer quand même ? "
+                  "[Entrée = oui · n = non] : ").strip().lower()
+        if r == "n":
+            print("   Annulé. Astuce : fais plusieurs messages courts.")
+            return False
+    return envoyer_serie(iface, [m.encode("utf-8") for m in morceaux], dest, quoi="morceau") > 0
+
+
+def proposer_envoi_texte(iface, dest, morceaux):
+    """Après une dictée : envoyer tel quel, annuler, ou corriger au clavier."""
+    r = input("   Envoyer ? [Entrée = oui · n = non · ou tape une correction] : ").strip()
+    if r.lower() == "n":
+        print("   Annulé.")
+        return False
+    return envoyer_texte(iface, dest, decouper(r) if r else morceaux)
+
+
 def cmd_dicter(a):
     modele = charger_whisper(a.modele)
     iface = dest = abonnement = None
@@ -889,34 +1053,11 @@ def cmd_dicter(a):
                 break
             continue
 
-        n = len(texte.encode("utf-8"))
-        voix = math.ceil(parole * CODEC2_BPS / 8)
-        print(f"\n   Transcrit en {dt:.1f} s : « {texte} »")
-        print(f"   {parole:.1f} s de parole → {n} octets de texte "
-              f"(la voix en Codec2 : {voix} octets, soit {voix / max(n, 1):.0f}× plus).")
-        morceaux = decouper(texte)
-        ta = sum(temps_antenne(len(m.encode('utf-8'))) for m in morceaux)
-        print(f"   {len(morceaux)} paquet(s) · ≈ {ta:.1f} s de temps d'antenne "
-              f"({part_du_quota(ta):.1f} % de ton quota de l'heure).")
-
+        morceaux = afficher_transcription(texte, dt, parole)
         if a.essai:
             print("   Mode essai : rien n'est envoyé.")
         else:
-            r = input("   Envoyer ? [Entrée = oui · n = non · ou tape une correction] : ").strip()
-            if r.lower() == "n":
-                print("   Annulé.")
-            else:
-                if r:
-                    morceaux = decouper(r)
-                if len(morceaux) > 3:
-                    r2 = input(f"   Ce message part en {len(morceaux)} paquets. Les longs messages peuvent "
-                               "arriver en retard\n   (quota européen de 10 %). Envoyer quand même ? "
-                               "[Entrée = oui · n = non] : ").strip().lower()
-                    if r2 == "n":
-                        print("   Annulé. Astuce : fais plusieurs messages courts.")
-                        morceaux = []
-                if morceaux:
-                    envoyer_serie(iface, [m.encode("utf-8") for m in morceaux], dest, quoi="morceau")
+            proposer_envoi_texte(iface, dest, morceaux)
         if a.fichier:
             break
     if iface:
@@ -944,6 +1085,33 @@ def comparer_qualites(pcm):
         print(f"   ▶ {q}")
         jouer(son)
         time.sleep(0.4)
+
+
+def emballer_note(pcm, qualite):
+    """Encode une note en Codec2, la découpe en paquets, affiche son coût, garde un aperçu."""
+    octets = encoder_voix(pcm, qualite)
+    paquets = paquets_voix(octets, qualite, secrets.randbelow(256))
+    ta = sum(temps_antenne(len(p)) for p in paquets)
+    print(f"   {len(pcm) / SR_VOIX:.1f} s de voix → {len(octets)} octets en Codec2 {qualite} · "
+          f"{len(paquets)} paquet(s) · ≈ {ta:.0f} s d'antenne ({part_du_quota(ta):.0f} % de ton quota de l'heure).")
+    apercu = decoder_voix(octets, qualite)
+    chemin = sauver_wav(apercu, f"envoi_{datetime.now():%Y%m%d-%H%M%S}_{qualite}")
+    return paquets, apercu, chemin
+
+
+def proposer_envoi_note(iface, dest, pcm, qualite, verrou=None):
+    """Envoyer, écouter d'abord, ou annuler. `verrou` : le haut-parleur, s'il est partagé."""
+    paquets, apercu, _ = emballer_note(pcm, qualite)
+    r = input("   [Entrée = envoyer · e = écouter d'abord · n = annuler] : ").strip().lower()
+    if r == "e":
+        with verrou or contextlib.nullcontext():
+            jouer(apercu)
+        r = input("   Envoyer ? [Entrée = oui · n = non] : ").strip().lower()
+    if r == "n":
+        print("   Annulé.")
+        return False
+    from meshtastic.protobuf import portnums_pb2
+    return envoyer_serie(iface, paquets, dest, portnums_pb2.PortNum.PRIVATE_APP, quoi="morceau") > 0
 
 
 def cmd_vocal(a):
@@ -977,27 +1145,12 @@ def cmd_vocal(a):
 
         if a.comparer:
             comparer_qualites(pcm)
+        elif a.essai:
+            _, apercu, chemin = emballer_note(pcm, a.qualite)
+            print(f"   Mode essai : rien n'est envoyé. Voici ce que l'autre PC entendrait ({chemin}) :")
+            jouer(apercu)
         else:
-            octets = encoder_voix(pcm, a.qualite)
-            paquets = paquets_voix(octets, a.qualite, secrets.randbelow(256))
-            ta = sum(temps_antenne(len(p)) for p in paquets)
-            print(f"   {len(pcm) / SR_VOIX:.1f} s de voix → {len(octets)} octets en Codec2 {a.qualite} · "
-                  f"{len(paquets)} paquet(s) · ≈ {ta:.0f} s d'antenne ({part_du_quota(ta):.0f} % de ton quota de l'heure).")
-            apercu = decoder_voix(octets, a.qualite)
-            chemin = sauver_wav(apercu, f"envoi_{datetime.now():%Y%m%d-%H%M%S}_{a.qualite}")
-            if a.essai:
-                print(f"   Mode essai : rien n'est envoyé. Voici ce que l'autre PC entendrait ({chemin}) :")
-                jouer(apercu)
-            else:
-                r = input("   [Entrée = envoyer · e = écouter d'abord · n = annuler] : ").strip().lower()
-                if r == "e":
-                    jouer(apercu)
-                    r = input("   Envoyer ? [Entrée = oui · n = non] : ").strip().lower()
-                if r == "n":
-                    print("   Annulé.")
-                else:
-                    from meshtastic.protobuf import portnums_pb2
-                    envoyer_serie(iface, paquets, dest, portnums_pb2.PortNum.PRIVATE_APP, quoi="morceau")
+            proposer_envoi_note(iface, dest, pcm, a.qualite)
         if a.fichier:
             break
     if iface:
@@ -1005,74 +1158,93 @@ def cmd_vocal(a):
 
 
 def cmd_ecouter(a):
-    from pubsub import pub
     iface = connecter(a.port)
-    file, assembleur, vocal = queue.Queue(), Assembleur(), ReceptionVocale()
-
-    def annoncer(p, texte):
-        if a.voix:
-            file.put(("dire", f"Message de {nom_de(iface, expediteur(p))}. {texte}"))
-
-    def note_prete(note):
-        qui = note["qui"]
-        nom = nom_de(iface, qui)
-        incomplet = note["recus"] < note["total"]
-        chemin = sauver_wav(note["pcm"], f"{datetime.now():%Y%m%d-%H%M%S}_{nom}")
-        entete = decrire_paquet(iface, note["p"]) if note["p"] else f"{nom} ({qui})"
-        print(f"\n   {entete}")
-        print(f"   🎙 Note vocale de {note['duree']:.1f} s (Codec2 {note['qualite']})"
-              + (f" · incomplète : {note['recus']}/{note['total']} morceaux, silences à la place des trous"
-                 if incomplet else "") + f" · enregistrée : {chemin}")
-        if a.voix:
-            file.put(("dire", f"Note vocale de {nom}."))
-            file.put(("jouer", note["pcm"]))
-
-    def texte_recu(packet, interface):
-        complet = recevoir(interface, packet, assembleur)
-        if complet is not None:
-            annoncer(packet, complet)
-
-    def donnees_recues(packet, interface):
-        qui = expediteur(packet)
-        note, prog = vocal.ajouter(qui, packet.get("decoded", {}).get("payload", b""), packet)
-        if prog is None:
-            return                                   # pas un paquet TrailNet
-        if note is None:
-            print(f"   … {nom_de(iface, qui)} : note vocale, morceau {prog[0]}/{prog[1]} reçu")
-        else:
-            note_prete(note)
-
-    # gardés en vie dans cette fonction : pubsub ne garde qu'une référence faible
-    pub.subscribe(texte_recu, "meshtastic.receive.text")
-    pub.subscribe(donnees_recues, "meshtastic.receive.data.PRIVATE_APP")
-
-    lecteur = Lecteur() if a.voix else None
-    print("   En attente de messages et de notes vocales… (Ctrl+C pour quitter)")
+    rec = Reception(iface, a.voix)
+    rec.abonner()
     try:
+        lecteur = Lecteur() if a.voix else None
+        if not a.voix:
+            print("   Lecture à voix haute coupée : les messages s'affichent seulement.\n"
+                  "   Pour les entendre, relance avec --voix (ou utilise « converser »).")
+        print("   En attente de messages et de notes vocales… (Ctrl+C pour quitter)")
+        rec.servir(lecteur)
+    finally:
+        rec.desabonner()
+        iface.close()
+
+
+def enregistrer_sans_echo(rec):
+    """Enregistre au micro en coupant le haut-parleur, pour ne pas capter la voix de synthèse."""
+    if not rec.haut_parleur.acquire(blocking=False):
+        print("   (je termine la lecture du message reçu, puis je t'écoute…)")
+        rec.haut_parleur.acquire()
+    try:
+        return enregistrer()
+    finally:
+        rec.haut_parleur.release()
+
+
+def cmd_converser(a):
+    """Envoyer et recevoir dans la même fenêtre : on parle, on tape, on entend les réponses."""
+    modele = charger_whisper(a.modele)
+    iface = connecter(a.port)
+    rec = None
+    try:
+        if a.canal:
+            dest = None
+            print(f"   Conversation avec tout le canal « {iface.localNode.channels[0].settings.name or 'principal'} ».")
+        else:
+            dest = choisir_destinataire(iface, a.vers)
+            annoncer_destinataire(dest)
+        rec = Reception(iface, voix=not a.muet, rappel="   ↵ Entrée pour répondre")
+        rec.abonner()
+        threading.Thread(target=rec.servir, daemon=True, name="haut-parleur").start()
+        rec.pret.wait(15)                    # la voix de synthèse est prête (ou coupée)
+        print("\n   Conversation ouverte. Les messages reçus s'affichent ici"
+              + (" et sont lus à voix haute." if rec.voix else " (lecture à voix haute coupée : --muet)."))
         while True:
+            rec.a_l_invite = True
             try:
-                for p, texte in assembleur.expires():
-                    if p is not None:
-                        afficher_message(iface, p, texte)
-                        annoncer(p, texte)
-                for note in vocal.expires():
-                    note_prete(note)
-            except Exception as e:
-                print(f"   (erreur pendant la réception : {e})")
+                r = input("\n[Entrée] parler · [v] note vocale · ou tape un message · [q] quitter : ").strip()
+            finally:
+                rec.a_l_invite = False
+            if r.lower() == "q":
+                break
             try:
-                quoi, contenu = file.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            try:
-                if quoi == "dire":
-                    lecteur.dire(contenu)
+                if r == "":
+                    audio = enregistrer_sans_echo(rec)
+                    if audio is None or len(audio) < SR // 2:
+                        print("   Trop court, recommence.")
+                        continue
+                    texte, dt, parole = transcrire(modele, audio)
+                    if not texte:
+                        print("   Rien compris. Parle plus près du micro, dans une pièce calme.")
+                        continue
+                    proposer_envoi_texte(iface, dest, afficher_transcription(texte, dt, parole))
+                elif r.lower() == "v":
+                    audio = enregistrer_sans_echo(rec)
+                    if audio is None or len(audio) < SR // 2:
+                        print("   Trop court, recommence.")
+                        continue
+                    pcm, diag = preparer_voix(audio, a.debruiter, a.max)
+                    afficher_diagnostic(diag)
+                    if pcm is None:
+                        print("   Je n'entends pas de voix. Parle plus près du micro.")
+                        continue
+                    proposer_envoi_note(iface, dest, pcm, a.qualite, verrou=rec.haut_parleur)
                 else:
-                    jouer(contenu)
-            except Exception as e:                        # la voix plante : on continue d'écouter
-                print(f"   (lecture impossible : {e})")
-    except KeyboardInterrupt:
-        pass
-    iface.close()
+                    envoyer_texte(iface, dest, decouper(r))
+            except (KeyboardInterrupt, EOFError, SystemExit):
+                raise
+            except ModuleNotFoundError as e:
+                print(f"   {conseil_module(e)}\n   (la conversation continue)")
+            except Exception as e:                    # une erreur ne doit pas couper la conversation
+                print(f"   (erreur : {e} — la conversation continue)")
+    finally:
+        if rec is not None:
+            rec.stop.set()
+            rec.desabonner()
+        iface.close()
 
 
 def main():
@@ -1112,15 +1284,29 @@ def main():
     p = sub.add_parser("ecouter", help="recevoir les messages et les notes vocales")
     p.add_argument("--port", required=True)
     p.add_argument("--voix", action="store_true", help="lire à voix haute et jouer les notes vocales")
+    p = sub.add_parser("converser", help="envoyer et recevoir dans la même fenêtre (voix haute incluse)")
+    p.add_argument("--port", required=True)
+    p.add_argument("--vers", help="nom ou identifiant (!a1b2c3d4) du correspondant")
+    p.add_argument("--canal", action="store_true", help="converser avec tout le canal privé")
+    p.add_argument("--modele", default="small", choices=["tiny", "base", "small", "medium"])
+    p.add_argument("--muet", action="store_true", help="ne pas lire à voix haute ce qui arrive")
+    p.add_argument("--qualite", default="700C", choices=QUALITES, help="débit Codec2 des notes vocales")
+    p.add_argument("--max", type=int, default=30, help="secondes de parole au maximum par note vocale")
+    p.add_argument("--debruiter", action="store_true", help="réduire le bruit de fond des notes vocales")
     a = ap.parse_args()
     if a.cmd == "dicter" and not a.essai and not a.port:
         ap.error("--port est obligatoire (sauf avec --essai)")
     if a.cmd == "vocal" and not (a.essai or a.comparer) and not a.port:
         ap.error("--port est obligatoire (sauf avec --essai ou --comparer)")
-    if a.cmd == "vocal" and not 1 <= a.max <= 100:
+    if a.cmd in ("vocal", "converser") and not 1 <= a.max <= 100:
         ap.error("--max doit être entre 1 et 100 secondes")
-    {"ports": cmd_ports, "canal": cmd_canal, "noeuds": cmd_noeuds, "dicter": cmd_dicter,
-     "vocal": cmd_vocal, "ecouter": cmd_ecouter}[a.cmd](a)
+    try:
+        {"ports": cmd_ports, "canal": cmd_canal, "noeuds": cmd_noeuds, "dicter": cmd_dicter,
+         "vocal": cmd_vocal, "ecouter": cmd_ecouter, "converser": cmd_converser}[a.cmd](a)
+    except (KeyboardInterrupt, EOFError):
+        print("\n   Arrêt demandé. À bientôt.")
+    except ModuleNotFoundError as e:
+        sys.exit(conseil_module(e))
 
 
 if __name__ == "__main__":
