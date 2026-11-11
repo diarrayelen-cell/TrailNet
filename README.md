@@ -10,7 +10,7 @@ TrailNet vise un communicateur hors réseau pour la randonnée. Ce prototype en 
 
 > ⚠ **Prototype de laboratoire.** Ce n'est pas un moyen d'alerte. En montagne, garde ton téléphone, le 112 et les moyens de secours officiels.
 
-**Version du script : v1.7.1** (`py trailnet_pc.py --version`). Testé en vrai entre deux PC, dans les deux sens : la dictée, la réception, la lecture à voix haute et le mode conversation, messages longs en 2 et 3 paquets compris. Les notes vocales par radio sont testées hors carte ; l'essai réel est la prochaine étape.
+**Version du script : v1.8** (`py trailnet_pc.py --version`). Testé en vrai entre deux PC, dans les deux sens : la dictée, la réception, la lecture à voix haute et le mode conversation, messages longs en 2 et 3 paquets compris. Les notes vocales par radio et le nouvel installateur sont testés hors carte et hors Windows ; l'essai réel est la prochaine étape.
 
 **Par où commencer.** Un seul script, deux niveaux :
 
@@ -101,7 +101,7 @@ Tout est gratuit :
 
 - **Pilote CP210x** de Silicon Labs : la puce USB des cartes Heltec ;
 - **Firmware Meshtastic** : le logiciel libre qui transforme la carte en radio maillée ;
-- **Python 3.12 ou plus récent** (testé avec 3.12 et 3.14) ;
+- **Python 3.10 à 3.14** (testé avec 3.12 et 3.14) ;
 - **ce dépôt** : le script `trailnet_pc.py`.
 
 Testé sous **Windows**. Linux et macOS devraient fonctionner mais n'ont pas été testés : remplace `py` par `python3`, et les ports s'appellent `/dev/ttyUSB0` ou `/dev/cu.usbserial-…`.
@@ -131,13 +131,42 @@ Recommence avec la deuxième carte.
 
 À faire sur les deux PC.
 
+### Le plus simple : l'installateur (Windows)
+
+1. Télécharge le dépôt (bouton vert **Code → Download ZIP**, ou le zip de la dernière [Release](https://github.com/diarrayelen-cell/TrailNet/releases)) et décompresse-le, par exemple dans `C:\projets\TrailNet`.
+2. Double-clique sur **`installer.bat`**.
+
+Il choisit un Python 3.10 à 3.14 installé sur le PC, installe toutes les bibliothèques, télécharge le modèle Whisper (environ 460 Mo, une seule fois), puis vérifie tout le PC :
+
+```
+   ✓ Python 3.12.7 (lancé avec « py »)
+   ✓ meshtastic 2.7.11 · parler à la carte LoRa
+   …
+   ✓ Voix française : Microsoft Hortense Desktop - French
+   ✓ Modèle Whisper « small » présent : la transcription marche hors ligne
+   ✓ Carte LoRa probable sur COM3
+
+   Bilan : tout est prêt.
+
+   Prochaine étape, dans ce dossier :
+      py trailnet_pc.py ports
+```
+
+**Utilise ensuite exactement la commande qu'il affiche** : `py trailnet_pc.py …`, ou `py -3.12 trailnet_pc.py …` si ton PC a plusieurs versions de Python. Chaque ligne ✗ dit quoi faire.
+
+> Pas de Python ? L'installateur te le dit : installe Python 3.12 depuis [python.org](https://www.python.org/downloads/windows/) en cochant **« Add python.exe to PATH »**, puis relance-le. Si Windows affiche « Windows a protégé votre ordinateur », clique sur « Informations complémentaires », puis « Exécuter quand même ».
+
+Pour tout revérifier plus tard, carte comprise : `py trailnet_pc.py diagnostic --port COM3`. Rien n'est envoyé nulle part, et la clé du canal n'est jamais affichée.
+
+### À la main (si tu préfères, ou sous Linux et macOS)
+
 **1. Vérifie Python.** Dans PowerShell :
 
 ```powershell
 py --list
 ```
 
-Si tu vois `-V:3.12`, `-V:3.13` ou `-V:3.14`, c'est bon. Sinon, installe Python depuis python.org et coche **« Add python.exe to PATH »**.
+Si tu vois une version de `-V:3.10` à `-V:3.14`, c'est bon. Sinon, installe Python depuis python.org et coche **« Add python.exe to PATH »**.
 
 > Plusieurs versions installées ? `py` utilise celle marquée d'une étoile. Installe et lance **toujours avec la même** : si tu installes avec `py -3.12`, lance avec `py -3.12`.
 
@@ -175,7 +204,7 @@ py -m pip install pyrnnoise --no-deps
 py trailnet_pc.py --version
 ```
 
-Tu dois lire `TrailNet v1.6.1`. Si tu as plusieurs PC, vérifie que **tous** ont la même version.
+Tu dois lire `TrailNet v1.8`. Si tu as plusieurs PC, vérifie que **tous** ont la même version. Puis vérifie le reste : `py trailnet_pc.py diagnostic`.
 
 ## Étape 3 — Tester la transcription, sans carte
 
@@ -183,7 +212,7 @@ Tu dois lire `TrailNet v1.6.1`. Si tu as plusieurs PC, vérifie que **tous** ont
 py trailnet_pc.py dicter --essai
 ```
 
-Au premier lancement, le modèle Whisper `small` se télécharge (environ 460 Mo). **C'est la seule fois où le script se connecte à internet** : ensuite, il charge le modèle depuis le disque, sans réseau.
+Au premier lancement, le modèle Whisper `small` se télécharge (environ 460 Mo), sauf si l'installateur l'a déjà fait. **C'est la seule fois où le script se connecte à internet** : ensuite, il charge le modèle depuis le disque, sans réseau.
 
 Appuie sur Entrée, parle, appuie de nouveau sur Entrée. Tu dois voir :
 
@@ -419,6 +448,10 @@ Options : `--vers` (correspondant), `--canal` (tout le canal privé), `--muet` (
 
 | Commande | Ce qu'elle fait |
 |---|---|
+| Double-clic sur `installer.bat` | Installe tout sur ce PC, télécharge Whisper, puis lance le diagnostic (Windows) |
+| `py trailnet_pc.py installer` | La même chose depuis un terminal (Linux, macOS : `python3 trailnet_pc.py installer`) |
+| `py trailnet_pc.py diagnostic` | Dit ce qui est prêt et ce qui manque : Python, bibliothèques, micro, voix française, modèle Whisper, carte |
+| `py trailnet_pc.py diagnostic --port COM3` | Vérifie aussi la carte : firmware, région, canal privé, appareils connus, temps d'émission |
 | `py trailnet_pc.py --version` | Affiche la version du script |
 | `py trailnet_pc.py ports` | Liste les ports série, repère les cartes LoRa |
 | `py trailnet_pc.py canal --port COM3` | Crée un canal privé et l'installe carte après carte |
@@ -442,6 +475,7 @@ Options : `--vers` (correspondant), `--canal` (tout le canal privé), `--muet` (
 
 | Ce que tu vois | Pourquoi | Que faire |
 |---|---|---|
+| Tu ne sais pas ce qui cloche | — | `py trailnet_pc.py diagnostic --port COM3` : chaque ligne ✗ dit quoi faire |
 | `Aucun port trouvé` | Câble « charge seule » ou pilote absent | Câble de données, pilote CP210x, puis `Get-PnpDevice` (étape 4) |
 | `No module named 'meshtastic'` (ou `'pubsub'`, `'pycodec2'`) | L'installation a échoué ou a visé une autre version de Python | Relance l'étape 2.3 avec **le même** `py` que pour lancer le script |
 | `invalid choice: 'vocal'` ou `'canal'` | Ancienne version du script sur ce PC | Remplace `trailnet_pc.py` par celui de ce dépôt, puis vérifie avec `--version` |
@@ -507,6 +541,7 @@ N'active **jamais** l'option « Override Duty Cycle », ne modifie pas la puissa
 Des pistes d'exercices, de la plus simple à la plus ambitieuse :
 
 - **Vocabulaire** : aider Whisper avec une liste de mots du domaine (col, refuge, sentier…).
+- **Interface locale** : une page dans le navigateur, ouverte sur le PC seulement, pour tout régler et converser sans terminal.
 - **Conversation à plusieurs** : `converser --canal` marche déjà ; reste à afficher qui parle à qui et à gérer plusieurs correspondants.
 - **Réglage radio** : les préréglages MEDIUM_FAST (environ 3 fois moins de temps d'antenne) ou SHORT_FAST (environ 10 fois moins) portent moins loin mais laissent passer plus de voix. À mesurer sur le terrain.
 - **Compression du texte** : gagner encore des octets sur chaque message.
@@ -532,7 +567,8 @@ Briques utilisées : [Meshtastic](https://meshtastic.org) (GPL-3.0), [faster-whi
 ```
 TrailNet/
 ├── README.md          ce guide
-├── trailnet_pc.py     le script (ports, canal, noeuds, dicter, vocal, ecouter, converser)
+├── installer.bat      tout installer en un double-clic (Windows)
+├── trailnet_pc.py     le script (installer, diagnostic, ports, canal, noeuds, dicter, vocal, ecouter, converser)
 ├── requirements.txt   bibliothèques Python
 ├── LICENSE            GNU GPL v3
 ├── .gitignore         fichiers à ne jamais mettre en ligne
@@ -543,6 +579,7 @@ Le dossier `messages_vocaux/` est créé tout seul sur ton PC, à côté du scri
 
 ## Versions
 
+- **v1.8** — installation en un double-clic (`installer.bat`) ; nouvelle commande `diagnostic` qui vérifie le PC et, avec `--port`, la carte (firmware, région, canal privé) ; Python 3.10 à 3.14.
 - **v1.7.1** — si une bibliothèque manque (par exemple `pycodec2`), le script donne la commande d'installation exacte au lieu d'une erreur brute ; README : « Par où commencer », en deux niveaux.
 - **v1.7** — mode conversation (`converser`) : envoyer et recevoir dans la même fenêtre, lecture à voix haute incluse, haut-parleur coupé pendant qu'on parle ; la carte prend l'heure du PC à la connexion ; `ecouter` rappelle l'option `--voix`.
 - **v1.6.1** — le destinataire d'un message direct est toujours demandé, pour ne jamais écrire par erreur à l'appareil d'un voisin ; Ctrl+C quitte proprement.

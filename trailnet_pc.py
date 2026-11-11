@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────────────
-#  TrailNet — prototype « PC + carte LoRa »                    v1.7.1
+#  TrailNet — prototype « PC + carte LoRa »                    v1.8
 #  Parler → texte ou note vocale → radio LoRa → affichage, lecture.
 #  Sparkia Box · Sekou & Issa · 2026
 #
@@ -9,7 +9,10 @@
 #  Tout reste sur l'ordinateur : aucun serveur, aucun compte, aucun
 #  envoi sur internet (le modèle Whisper se télécharge une seule fois).
 #
+#  Installation : double-clic sur installer.bat (ou py trailnet_pc.py installer)
+#
 #  Commandes :
+#    py trailnet_pc.py diagnostic [--port COM3]    ce qui est prêt, ce qui manque
 #    py trailnet_pc.py ports                       ports USB détectés
 #    py trailnet_pc.py canal   --port COM3         canal privé sur toutes tes cartes
 #    py trailnet_pc.py noeuds  --port COM3         appareils connus, état de la radio
@@ -26,10 +29,11 @@
 #  la Free Software Foundation, version 3 ou (à ton choix) toute version
 #  ultérieure. Il est distribué SANS AUCUNE GARANTIE. Voir le fichier LICENSE.
 # ─────────────────────────────────────────────────────────────────────
-import argparse, base64, contextlib, math, os, queue, re, secrets, struct, sys, threading, time, wave
+import argparse, base64, contextlib, importlib, importlib.util, math, os, queue, re, secrets, struct
+import subprocess, sys, threading, time, wave
 from datetime import datetime
 
-VERSION = "1.7.1"
+VERSION = "1.8"
 SR = 16000          # Whisper travaille en 16 kHz mono
 SR_VOIX = 8000      # Codec2 travaille en 8 kHz mono
 MAX_OCTETS = 200    # texte par paquet (limite Meshtastic : 233 octets de données)
@@ -48,11 +52,24 @@ def temps_antenne(octets_utiles, sf=11, bw=250_000, cr=1, preambule=16, entete=2
     return (preambule + 4.25) * tsym + n * tsym
 
 
+def commande_python():
+    """La commande qui relance CE Python depuis un terminal : py, py -3.12 ou python3."""
+    if sys.platform != "win32":
+        return "python3"
+    try:
+        r = subprocess.run(["py", "-c", "import sys; print(sys.executable)"],
+                           capture_output=True, text=True, timeout=20)
+        if r.returncode == 0 and os.path.samefile(r.stdout.strip(), sys.executable):
+            return "py"
+    except Exception:
+        pass
+    return f"py -{sys.version_info.major}.{sys.version_info.minor}"
+
+
 def conseil_module(e):
     """Message clair quand une bibliothèque manque sur ce PC (ex. pycodec2)."""
-    py = f"py -{sys.version_info.major}.{sys.version_info.minor}" if sys.platform == "win32" else "python3"
-    return (f"Il manque la bibliothèque « {e.name} » sur ce PC. Installe-la avec le même Python "
-            f"que le script, dans le dossier du script :\n   {py} -m pip install -r requirements.txt")
+    return (f"Il manque la bibliothèque « {e.name} » sur ce PC. Double-clique sur installer.bat, "
+            f"ou, dans le dossier du script :\n   {commande_python()} -m pip install -r requirements.txt")
 
 
 def part_du_quota(secondes):
@@ -902,6 +919,201 @@ class Reception:
                     print(f"   (lecture impossible : {e})")
 
 
+# ── installation et diagnostic ───────────────────────────────────────
+PYTHON_MIN, PYTHON_MAX = (3, 10), (3, 14)     # versions pour lesquelles toutes les bibliothèques existent
+BIBLIOTHEQUES = [
+    # (module à importer, paquet pip, à quoi il sert, indispensable)
+    ("meshtastic", "meshtastic", "parler à la carte LoRa", True),
+    ("pubsub", "pypubsub", "recevoir les messages de la carte", True),
+    ("serial", "pyserial", "trouver les ports USB", True),
+    ("faster_whisper", "faster-whisper", "transcrire la voix (Whisper)", True),
+    ("sounddevice", "sounddevice", "micro et haut-parleur", True),
+    ("numpy", "numpy", "calculs audio", True),
+    ("pycodec2", "pycodec2", "notes vocales Codec2", True),
+    ("pyttsx3", "pyttsx3", "voix de secours", False),
+]
+if sys.platform == "win32":
+    BIBLIOTHEQUES.append(("win32com.client", "pywin32", "voix de Windows (lecture à voix haute)", True))
+FIRMWARE_MIN = (2, 7, 15)     # corrige CVE-2025-53627 (faux messages directs) et CVE-2025-52464 (clés)
+
+
+def version_paquet(nom):
+    try:
+        from importlib.metadata import version
+        return version(nom)
+    except Exception:
+        return ""
+
+
+def voix_francaise():
+    """Nom de la voix française de Windows ; '' s'il n'y en a pas ; None si on ne peut pas savoir."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import win32com.client
+        voix = win32com.client.Dispatch("SAPI.SpVoice").GetVoices()
+        for i in range(voix.Count):
+            d = voix.Item(i).GetDescription()
+            if any(k in d for k in VOIX_FR):
+                return d
+        return ""
+    except Exception:
+        return None
+
+
+def modele_present(modele):
+    """Le modèle Whisper est-il déjà sur le disque ? (vérifié sans réseau)"""
+    try:
+        from faster_whisper.utils import download_model
+        download_model(modele, local_files_only=True)
+        return True
+    except Exception:
+        return False
+
+
+def ports_cartes():
+    """Ports qui ressemblent à une carte LoRa (puce USB CP210x, CH9102, CH340), sans les ports Bluetooth."""
+    return [(d, desc) for d, desc in ports_detectes()
+            if "Bluetooth" not in desc and any(k in desc for k in ("CP210", "Silicon", "CH9102", "CH340"))]
+
+
+def diagnostiquer(commande, port=None, modele="small", preparer=False):
+    """Vérifie ce PC, et la carte si `port` est donné. Rend le nombre de points bloquants."""
+    print(f"TrailNet v{VERSION} — vérification de ce PC\n")
+    compte = {"ko": 0, "av": 0}
+
+    def ok(t):
+        print(f"   ✓ {t}")
+
+    def ko(t, remede):
+        compte["ko"] += 1
+        print(f"   ✗ {t}\n      → {remede}")
+
+    def av(t, remede=None):
+        compte["av"] += 1
+        print(f"   ⚠ {t}" + (f"\n      → {remede}" if remede else ""))
+
+    v = sys.version_info
+    if PYTHON_MIN <= v[:2] <= PYTHON_MAX:
+        ok(f"Python {v.major}.{v.minor}.{v.micro} (lancé avec « {commande} »)")
+    else:
+        ko(f"Python {v.major}.{v.minor} : version non prise en charge (3.10 à 3.14)",
+           "installe Python 3.12 depuis python.org, puis relance installer.bat")
+
+    installer = f"double-clic sur installer.bat, ou : {commande} -m pip install -r requirements.txt"
+    presents = set()
+    for module, paquet, role, indispensable in BIBLIOTHEQUES:
+        try:
+            importlib.import_module(module)
+            presents.add(module)
+            ver = version_paquet(paquet)
+            ok(f"{paquet}{' ' + ver if ver else ''} · {role}")
+        except Exception as e:
+            (ko if indispensable else av)(f"{paquet} absent ou cassé ({type(e).__name__}) · {role}", installer)
+    if importlib.util.find_spec("pyrnnoise") is not None:
+        ok("pyrnnoise · débruitage des notes vocales (facultatif)")
+    else:
+        print("   – pyrnnoise absent · débruitage des notes vocales, facultatif (README, étape 2)")
+
+    if "sounddevice" in presents:
+        import sounddevice as sd
+        for genre, nom, remede in (("input", "Micro", "Paramètres Windows → Son → Entrée : choisis un micro"),
+                                   ("output", "Haut-parleur", "Paramètres Windows → Son → Sortie")):
+            try:
+                d = sd.query_devices(kind=genre)
+                ok(f"{nom} : {d.get('name', 'par défaut')}")
+            except Exception:
+                ko(f"{nom} introuvable", remede)
+
+    if "win32com.client" in presents:
+        nom = voix_francaise()
+        if nom:
+            ok(f"Voix française : {nom}")
+        elif nom == "":
+            av("Aucune voix française : les messages seraient lus avec un accent anglais",
+               "Paramètres Windows → Heure et langue → Voix → Ajouter des voix → Français")
+
+    if "faster_whisper" in presents:
+        if preparer and not modele_present(modele):
+            try:
+                charger_whisper(modele)
+            except Exception as e:
+                print(f"   (téléchargement du modèle impossible pour l'instant : {e})")
+        if modele_present(modele):
+            ok(f"Modèle Whisper « {modele} » présent : la transcription marche hors ligne")
+        else:
+            av(f"Modèle Whisper « {modele} » pas encore téléchargé",
+               "il se télécharge tout seul au premier « dicter » ou « converser » (internet, une seule fois)")
+
+    if "serial" in presents:
+        cartes = ports_cartes()
+        if cartes:
+            ok("Carte LoRa probable sur " + ", ".join(d for d, _ in cartes))
+        else:
+            av("Aucune carte LoRa détectée",
+               "branche-la avec un câble de DONNÉES ; rien ne s'affiche ? installe le pilote CP210x (README, étape 1)")
+
+    if port and "meshtastic" in presents:
+        print(f"\n   Carte sur {port} :")
+        try:
+            iface = connecter(port, verifier=False)
+        except SystemExit:
+            ko(f"Connexion impossible sur {port}",
+               f"vérifie le port ({commande} trailnet_pc.py ports) et ferme les autres logiciels qui l'utilisent")
+        else:
+            try:
+                meta = getattr(iface, "metadata", None)
+                fw = str(getattr(meta, "firmware_version", "") or "")
+                nums = tuple(int(x) for x in re.findall(r"\d+", fw)[:3])
+                if len(nums) == 3 and nums < FIRMWARE_MIN:
+                    av(f"Firmware Meshtastic {fw} : trop ancien (failles corrigées en 2.7.15)",
+                       "mets la carte à jour sur flasher.meshtastic.org (README, étape 1)")
+                elif fw:
+                    ok(f"Firmware Meshtastic {fw}")
+                try:
+                    from meshtastic.protobuf import config_pb2
+                    r = iface.localNode.localConfig.lora.region
+                    nom_r = config_pb2.Config.LoRaConfig.RegionCode.Name(r)
+                except Exception:
+                    r = None
+                if r == 0:
+                    ko("Région non réglée : la radio n'émet pas",
+                       f"meshtastic --port {port} --set lora.region EU_868 (README, étape 5)")
+                elif r is not None and nom_r != "EU_868":
+                    av(f"Région {nom_r}", "en Europe, règle la région sur EU_868 (README, étape 5)")
+                elif r is not None:
+                    ok("Région EU_868")
+                try:
+                    ch = iface.localNode.channels[0].settings
+                    n = len(bytes(ch.psk))
+                    if n > 1:
+                        ok(f"Canal privé « {ch.name or 'principal'} » (clé de {n} octets, jamais affichée)")
+                    else:
+                        av("Canal principal avec la clé par défaut, connue de tous les utilisateurs Meshtastic",
+                           f"{commande} trailnet_pc.py canal --port {port} (README, étape 6)")
+                except Exception:
+                    pass
+                noeuds = autres_noeuds(iface)
+                if noeuds:
+                    ok(f"{len(noeuds)} autre(s) appareil(s) connu(s), dont "
+                       f"{sum(1 for x in noeuds if x['cle'])} avec clé publique")
+                else:
+                    av("La carte ne connaît encore aucun autre appareil",
+                       "allume l'autre carte et attends une minute qu'elles se découvrent")
+                afficher_etat_radio(iface)
+            finally:
+                iface.close()
+
+    print()
+    if compte["ko"]:
+        print(f"   Bilan : {compte['ko']} point(s) à corriger (✗)"
+              + (f" et {compte['av']} conseil(s) (⚠)" if compte["av"] else "") + ".")
+        print(f"   Corrige-les, puis vérifie de nouveau : {commande} trailnet_pc.py diagnostic")
+    else:
+        print("   Bilan : tout est prêt" + (f", avec {compte['av']} conseil(s) (⚠) ci-dessus" if compte["av"] else "") + ".")
+    return compte["ko"]
+
+
 # ── commandes ────────────────────────────────────────────────────────
 def ports_detectes():
     """Ports série présents, avec leur description (Silicon Labs = carte Heltec)."""
@@ -918,6 +1130,37 @@ def cmd_ports(a):
         marque = "   ← carte LoRa probable" if ("CP210" in desc or "Silicon" in desc
                                                 or "CH9102" in desc or "CH340" in desc) else ""
         print(f"  {dev:<8} {desc}{marque}")
+
+
+def cmd_diagnostic(a):
+    commande = a.py or commande_python()
+    bloquants = diagnostiquer(commande, a.port, a.modele, preparer=a.preparer)
+    if a.preparer and not bloquants:
+        print("\n   Prochaine étape, dans ce dossier :")
+        print(f"      {commande} trailnet_pc.py ports")
+        print(f"      {commande} trailnet_pc.py converser --port COM3      (remplace COM3 par ton port)")
+        print("   Cartes pas encore prêtes ? README, étapes 1, 5 et 6.")
+
+
+def cmd_installer(a):
+    """Installe les bibliothèques sur CE Python, puis télécharge Whisper et vérifie tout."""
+    commande = a.py or commande_python()
+    v = sys.version_info
+    print(f"TrailNet v{VERSION} — installation avec Python {v.major}.{v.minor} (« {commande} »)\n")
+    if not PYTHON_MIN <= v[:2] <= PYTHON_MAX:
+        sys.exit("   Version de Python non prise en charge (3.10 à 3.14). Installe Python 3.12 depuis python.org.")
+    exigences = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")
+    if not os.path.exists(exigences):
+        sys.exit("   requirements.txt introuvable : il doit être dans le même dossier que trailnet_pc.py.")
+    print("1/2 Bibliothèques (quelques minutes la première fois)…\n")
+    r = subprocess.run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-r", exigences])
+    if r.returncode != 0:
+        sys.exit("\n   ✗ L'installation des bibliothèques a échoué (voir les lignes ci-dessus).\n"
+                 "     Vérifie la connexion internet, puis relance installer.bat.")
+    print("\n2/2 Modèle Whisper et vérification de ce PC…\n")
+    # un Python tout neuf, pour qu'il voie les bibliothèques qui viennent d'arriver
+    subprocess.run([sys.executable, os.path.abspath(__file__), "diagnostic", "--preparer",
+                    "--modele", a.modele, "--py", commande])
 
 
 def cmd_canal(a):
@@ -1256,6 +1499,15 @@ def main():
     ap = argparse.ArgumentParser(description="TrailNet (prototype) — le PC comme cerveau de la carte radio LoRa")
     ap.add_argument("--version", action="version", version=f"TrailNet v{VERSION}")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    modeles = ["tiny", "base", "small", "medium"]
+    p = sub.add_parser("installer", help="tout installer sur ce PC (c'est ce que fait installer.bat)")
+    p.add_argument("--modele", default="small", choices=modeles, help="modèle Whisper à télécharger")
+    p.add_argument("--py", help=argparse.SUPPRESS)
+    p = sub.add_parser("diagnostic", help="vérifier ce qui est prêt et ce qui manque (et la carte avec --port)")
+    p.add_argument("--port", help="vérifier aussi la carte branchée sur ce port")
+    p.add_argument("--modele", default="small", choices=modeles)
+    p.add_argument("--preparer", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--py", help=argparse.SUPPRESS)
     sub.add_parser("ports", help="lister les ports USB")
     p = sub.add_parser("canal", help="créer un canal privé et l'installer sur chaque carte")
     p.add_argument("--port", required=True, help="port de la première carte (ex. COM3)")
@@ -1301,7 +1553,7 @@ def main():
     if a.cmd in ("vocal", "converser") and not 1 <= a.max <= 100:
         ap.error("--max doit être entre 1 et 100 secondes")
     try:
-        {"ports": cmd_ports, "canal": cmd_canal, "noeuds": cmd_noeuds, "dicter": cmd_dicter,
+        {"installer": cmd_installer, "diagnostic": cmd_diagnostic, "ports": cmd_ports, "canal": cmd_canal, "noeuds": cmd_noeuds, "dicter": cmd_dicter,
          "vocal": cmd_vocal, "ecouter": cmd_ecouter, "converser": cmd_converser}[a.cmd](a)
     except (KeyboardInterrupt, EOFError):
         print("\n   Arrêt demandé. À bientôt.")
